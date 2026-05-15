@@ -5,16 +5,17 @@ const { runReviewCommand } = require('./commands/review');
 const HELP_TEXT = `msv <command> [options]
 
 Commands:
-  add                Read idea text from stdin, create pending idea
-  run [--all | <id>] Run investigation pipeline scaffold for pending ideas
-  review             Review ready investigations
+  add                Read idea text from stdin, capture as a pending idea
+  run --all          Run the investigation pipeline on every pending idea
+  run <id>           Run the investigation pipeline on a single idea
+  review             Step through ready investigations one at a time
 `;
 
 async function main(argv = process.argv.slice(2)) {
   const [command, ...args] = argv;
 
   if (!command || command === '--help' || command === '-h') {
-    process.stdout.write(`${HELP_TEXT}\n`);
+    process.stdout.write(HELP_TEXT);
     return;
   }
 
@@ -33,7 +34,8 @@ async function main(argv = process.argv.slice(2)) {
     return;
   }
 
-  throw new Error(`Unknown command: ${command}`);
+  process.stderr.write(`Unknown command: ${command}\n${HELP_TEXT}`);
+  process.exitCode = 1;
 }
 
 module.exports = {

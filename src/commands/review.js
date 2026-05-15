@@ -1,90 +1,131 @@
 const readline = require('node:readline/promises');
+const { spawn } = require('node:child_process');
 const { stdin, stdout } = require('node:process');
-const { archiveIdea, createIdea, listIdeasByStatus, writeIdea } = require('../storage');
+const {
+  archiveIdea,
+  createIdea,
+  listIdeasByStatus,
+  writeIdea,
+} = require('../storage');
 const { renderSteerCard, renderSynthesis } = require('../render');
+
+function clearScreen() {
+  process.stdout.write('\x1B[2J\x1B[0f');
+}
+
+function pageReport(text) {
+  return new Promise((resolve) => {
+    const pager = spawn('less', ['-R'], { stdio: ['pipe', 'inherit', 'inherit'] });
+    let resolved = false;
+    pager.on('error', () => {
+      if (resolved) return;
+      resolved = true;
+      // Fallback: print the report directly.
+      process.stdout.write(`${text}\n`);
+      resolve();
+    });
+    pager.on('close', () => {
+      if (resolved) return;
+      resolved = true;
+      resolve();
+    });
+    pager.stdin.on('error', () => {
+      /* swallow EPIPE; less may exit before we finish writing */
+    });
+    pager.stdin.end(text);
+  });
+}
+
+function ensureUserReactions(idea) {
+  if (!idea.user_reactions || typeof idea.user_reactions !== 'object') {
+    idea.user_reactions = { steer_notes: [], follow_up_topic: null };
+  }
+  if (!Array.isArray(idea.user_reactions.steer_notes)) {
+    idea.user_reactions.steer_notes = [];
+  }
+}
+
+async function steerLoop(rl, idea) {
+  while (true) {
+    const action = (await rl.question('> ')).trim().toLowerCase();
+
+    if (action === 'r') {
+      await pageReport(renderSynthesis(idea));
+      clearScreen();
+      process.stdout.write(`${renderSteerCard(idea)}\n`);
+      continue;
+    }
+
+    if (action === 'k') {
+      idea.status = 'archived';
+      await writeIdea(idea);
+      await archiveIdea(idea.id);
+      process.stdout.write(`archived ${idea.id}\n`);
+      return { action: 'kill' };
+    }
+
+    if (action === 'n') {
+      const note = (await rl.question('note: ')).trim();
+      if (note) {
+        ensureUserReactions(idea);
+        idea.user_reactions.steer_notes.push({
+          at: new Date().toISOString(),
+          text: note,
+        });
+        await writeIdea(idea);
+        process.stdout.write('note added.\n');
+      }
+      continue;
+    }
+
+    if (action === 'd') {
+      const topic = (await rl.question('refined topic: ')).trim();
+      if (!topic) {
+        process.stdout.write('skipped: empty topic.\n');
+        continue;
+      }
+      ensureUserReactions(idea);
+      idea.user_reactions.follow_up_topic = topic;
+      const followUp = createIdea(topic, { parent_id: idea.id });
+      await writeIdea(followUp);
+      idea.status = 'archived';
+      await writeIdea(idea);
+      await archiveIdea(idea.id);
+      process.stdout.write(`spawned ${followUp.id}, archived ${idea.id}\n`);
+      return { action: 'deeper', followUpId: followUp.id };
+    }
+
+    process.stdout.write('unknown action. [r]ead [d]eeper [k]ill [n]otes\n');
+  }
+}
 
 async function runReviewCommand() {
   const readyIdeas = await listIdeasByStatus('ready');
+  readyIdeas.sort((a, b) => (a.last_action_at || '').localeCompare(b.last_action_at || ''));
+
   if (readyIdeas.length === 0) {
-    process.stdout.write('No ready investigations.\n');
+    process.stdout.write('nothing to review\n');
     return;
   }
 
   const rl = readline.createInterface({ input: stdin, output: stdout });
+  let followUpCount = 0;
   try {
     for (const idea of readyIdeas) {
+      clearScreen();
       process.stdout.write(`${renderSteerCard(idea)}\n`);
-      const action = (await rl.question('Select action [r/d/k/n/q]: ')).trim().toLowerCase();
-
-      if (action === 'q') {
-        break;
-      }
-
-      if (action === 'r') {
-        process.stdout.write(`${renderSynthesis(idea)}\n`);
-        continue;
-      }
-
-      if (action === 'n') {
-        const note = (await rl.question('Steer note: ')).trim();
-        if (note) {
-          if (!idea.user_reactions || typeof idea.user_reactions !== 'object') {
-            idea.user_reactions = { steer_notes: [], follow_up_topic: null };
-          }
-          if (!Array.isArray(idea.user_reactions.steer_notes)) {
-            idea.user_reactions.steer_notes = [];
-          }
-          idea.user_reactions.steer_notes.push({
-            at: new Date().toISOString(),
-            note,
-          });
-          idea.last_action_at = new Date().toISOString();
-          await writeIdea(idea);
-          process.stdout.write('Note added.\n');
-        }
-        continue;
-      }
-
-      if (action === 'd') {
-        const topic = (await rl.question('Follow-up topic: ')).trim();
-        if (!topic) {
-          process.stdout.write('Skipped: empty follow-up topic.\n');
-          continue;
-        }
-
-        const followUpIdea = createIdea(topic, {
-          user_reactions: {
-            steer_notes: [],
-            follow_up_topic: null,
-          },
-          linked_from_idea_id: idea.id,
-        });
-        await writeIdea(followUpIdea);
-
-        if (!idea.user_reactions || typeof idea.user_reactions !== 'object') {
-          idea.user_reactions = { steer_notes: [], follow_up_topic: null };
-        }
-        idea.user_reactions.follow_up_topic = topic;
-        idea.last_action_at = new Date().toISOString();
-        await writeIdea(idea);
-
-        process.stdout.write(`Created follow-up idea: ${followUpIdea.id}\n`);
-        continue;
-      }
-
-      if (action === 'k') {
-        idea.status = 'archived';
-        idea.last_action_at = new Date().toISOString();
-        await writeIdea(idea);
-        await archiveIdea(idea.id);
-        process.stdout.write(`Archived idea ${idea.id}\n`);
-        continue;
-      }
-
-      process.stdout.write('Unknown action; skipping.\n');
+      const result = await steerLoop(rl, idea);
+      if (result.action === 'deeper') followUpCount += 1;
     }
   } finally {
     rl.close();
+  }
+
+  process.stdout.write('no more ready ideas\n');
+  if (followUpCount > 0) {
+    process.stdout.write(
+      `${followUpCount} follow-up investigation(s) queued — run msv run --all to process\n`
+    );
   }
 }
 
