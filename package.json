@@ -1,0 +1,21 @@
+{
+  "name": "msv",
+  "version": "0.1.0",
+  "description": "Multi-agent idea investigation CLI prototype",
+  "license": "MIT",
+  "type": "commonjs",
+  "bin": {
+    "msv": "bin/msv"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "0.54.0",
+    "tiktoken": "1.0.21",
+    "uuid": "11.1.0"
+  }
+}
