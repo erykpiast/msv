@@ -24,6 +24,8 @@ async function runStageScaffold(idea, stageName) {
   });
 
   if (stageName === 'working_groups') {
+    // Working-group pair debates are intended to run in parallel via Promise.all.
+    // Tasks are wired in once pipeline orchestration is implemented.
     const pairDebateTasks = [];
     await Promise.all(pairDebateTasks);
   }
