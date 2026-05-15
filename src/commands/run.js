@@ -24,7 +24,8 @@ async function runStageScaffold(idea, stageName) {
   });
 
   if (stageName === 'working_groups') {
-    await Promise.all([]);
+    const pairDebateTasks = [];
+    await Promise.all(pairDebateTasks);
   }
 
   appendEvent(idea, stageName, {
