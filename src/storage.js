@@ -125,6 +125,8 @@ function freshInvestigation() {
       dead_end_questions: [],
     },
     synthesis: null,
+    progress: null,
+    last_failure: null,
   };
 }
 
@@ -135,12 +137,20 @@ function freshInvestigation() {
 // in a partial migration or hand-edit. Falls back to v4 only when no signal exists.
 function normalizeLoadedIdea(idea) {
   const inv = idea?.investigation;
-  if (!inv || inv.schema_version) return idea;
-  const firstDebate = Array.isArray(inv.pair_debates) ? inv.pair_debates[0] : null;
-  const hasV5Marker =
-    firstDebate?.territory_id != null ||
-    Array.isArray(inv.coordinator_decisions?.initial?.territories);
-  inv.schema_version = hasV5Marker ? 'v5' : 'v4';
+  if (!inv) return idea;
+  // Ensure resumption fields exist at well-known keys with null defaults so
+  // downstream code can read inv.progress without optional-chaining each time.
+  // Ideas written by older code have both null; planResume treats that as "no
+  // resume anchor" and falls back to fresh-run.
+  if (!('progress' in inv)) inv.progress = null;
+  if (!('last_failure' in inv)) inv.last_failure = null;
+  if (!inv.schema_version) {
+    const firstDebate = Array.isArray(inv.pair_debates) ? inv.pair_debates[0] : null;
+    const hasV5Marker =
+      firstDebate?.territory_id != null ||
+      Array.isArray(inv.coordinator_decisions?.initial?.territories);
+    inv.schema_version = hasV5Marker ? 'v5' : 'v4';
+  }
   return idea;
 }
 
@@ -254,6 +264,27 @@ async function readLog(id, name) {
     .map((line) => JSON.parse(line));
 }
 
+// Per-idea async mutex that serialises concurrent read-modify-write operations
+// on index.json. Without this, two concurrent working-group checkpoint callbacks
+// can both observe findIndex === -1 and both append, duplicating entries.
+// The mutex chains Promises so each caller waits for the previous to finish.
+const _ideaMutexes = new Map();
+async function ideaWriteMutex(id, fn) {
+  const prev = _ideaMutexes.get(id) || Promise.resolve();
+  let resolveNext;
+  const next = new Promise((r) => {
+    resolveNext = r;
+  });
+  _ideaMutexes.set(id, prev.then(() => next));
+  await prev;
+  try {
+    return await fn();
+  } finally {
+    resolveNext();
+    if (_ideaMutexes.get(id) === next) _ideaMutexes.delete(id);
+  }
+}
+
 module.exports = {
   ROOT_DIR,
   IDEAS_DIR,
@@ -282,4 +313,5 @@ module.exports = {
   ideaLogsDir,
   ideaLogPath,
   archivedIdeaDir,
+  ideaWriteMutex,
 };

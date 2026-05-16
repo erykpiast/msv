@@ -24,6 +24,7 @@ const {
   ideaDir,
   ideaIndexPath,
   ideaLogPath,
+  ideaWriteMutex,
   listIdeas,
   listIdeasByStatus,
   normalizeLoadedIdea,
@@ -315,4 +316,84 @@ test('stripControlChars walks arrays and objects recursively', () => {
 test('stripControlChars preserves printable text including unicode and newlines', () => {
   const clean = 'line one\nline two — em-dash 🎯';
   assert.equal(stripControlChars(clean), clean);
+});
+
+// --- ideaWriteMutex ---
+
+test('two concurrent read-modify-writes inside the mutex preserve both mutations', async () => {
+  // Without the mutex, two concurrent callbacks can both observe findIndex === -1
+  // and both push, duplicating entries. This test simulates that race directly.
+  const id = randomId();
+  const idea = createIdea('test mutex');
+  idea.id = id;
+  idea.investigation.progress = { current_stage: '4_working_groups', working_groups: {} };
+
+  try {
+    await writeIdea(idea);
+
+    const op1 = ideaWriteMutex(idea.id, async () => {
+      const cur = await readIdea(idea.id);
+      cur.investigation.progress.working_groups.t1 = 'complete';
+      await writeIdea(cur);
+    });
+    const op2 = ideaWriteMutex(idea.id, async () => {
+      const cur = await readIdea(idea.id);
+      cur.investigation.progress.working_groups.t2 = 'complete';
+      await writeIdea(cur);
+    });
+    await Promise.all([op1, op2]);
+
+    const final = await readIdea(idea.id);
+    assert.deepEqual(final.investigation.progress.working_groups, {
+      t1: 'complete',
+      t2: 'complete',
+    });
+  } finally {
+    await fsp.rm(ideaDir(id), { recursive: true, force: true });
+  }
+});
+
+test('ideaWriteMutex propagates errors without leaking the lock', async () => {
+  const id = randomId();
+  const idea = createIdea('mutex error test');
+  idea.id = id;
+
+  try {
+    await writeIdea(idea);
+
+    const failOp = ideaWriteMutex(idea.id, async () => {
+      throw new Error('simulated failure');
+    });
+    await assert.rejects(failOp, /simulated failure/);
+
+    // Next operation must not hang (lock must have been released).
+    let resolved = false;
+    await Promise.race([
+      ideaWriteMutex(idea.id, async () => { resolved = true; }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 2000)),
+    ]);
+    assert.ok(resolved, 'lock was not released after error');
+  } finally {
+    await fsp.rm(ideaDir(id), { recursive: true, force: true });
+  }
+});
+
+// --- normalizeLoadedIdea: resumption fields ---
+
+test('normalizeLoadedIdea adds progress and last_failure null to ideas that lack them', () => {
+  const idea = { investigation: { schema_version: 'v5', pair_debates: [] } };
+  normalizeLoadedIdea(idea);
+  assert.ok('progress' in idea.investigation);
+  assert.equal(idea.investigation.progress, null);
+  assert.ok('last_failure' in idea.investigation);
+  assert.equal(idea.investigation.last_failure, null);
+});
+
+test('normalizeLoadedIdea does not overwrite existing progress or last_failure', () => {
+  const progress = { current_stage: '4_working_groups', working_groups: { t1: 'complete' } };
+  const last_failure = { reason: 'user_cancelled' };
+  const idea = { investigation: { schema_version: 'v5', pair_debates: [], progress, last_failure } };
+  normalizeLoadedIdea(idea);
+  assert.deepEqual(idea.investigation.progress, progress);
+  assert.deepEqual(idea.investigation.last_failure, last_failure);
 });

@@ -26,6 +26,7 @@ const {
   extractSurvivingClaims,
 } = require('./moves');
 const { appendLog, safeSlug } = require('./storage');
+const { CancellationError } = require('./failure');
 
 // territory.id is the canonical key, but coordinator-emitted territory_id is
 // preserved as a fallback for any code path that constructs from raw model output.
@@ -47,6 +48,43 @@ async function withRetry(fn, { logFirstError } = {}) {
       return { ok: false, firstError: firstErr, retryError: retryErr };
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Sub-stage progress helpers
+// ---------------------------------------------------------------------------
+
+// Ordered list of progress values for a single working group. 'complete' is the
+// terminal state set by runWorkingGroupsConcurrently after the WG returns.
+// 'debate_complete' is the transient value set by onCheckpoint after debate — it
+// becomes 'complete' in the finalisation step. Both are accepted as "debate done".
+const SUBSTAGE_ORDER = [
+  'pending',
+  'ideation_complete',
+  'adversarial_complete',
+  'alignment_complete',
+  'researcher_complete',
+  'observation_complete',
+  'debate_complete',
+  'complete',
+];
+
+// Maps a sub-stage name to the progress value that means it has finished.
+const SUBSTAGE_DONE_VALUE = {
+  ideation: 'ideation_complete',
+  adversarial: 'adversarial_complete',
+  alignment: 'alignment_complete',
+  researcher: 'researcher_complete',
+  observation: 'observation_complete',
+  debate: 'debate_complete',
+};
+
+function isSubStageComplete(progressValue, subStage) {
+  const doneValue = SUBSTAGE_DONE_VALUE[subStage];
+  if (!doneValue) return false;
+  const idx = SUBSTAGE_ORDER.indexOf(progressValue);
+  const targetIdx = SUBSTAGE_ORDER.indexOf(doneValue);
+  return idx >= 0 && targetIdx >= 0 && idx >= targetIdx;
 }
 
 // ---------------------------------------------------------------------------
@@ -150,286 +188,292 @@ async function runWorkingGroup({
   territory,
   personas,
   onProgress,
+  previousResult,
+  wgProgressValue = 'pending',
+  onCheckpoint,
+  cancellationToken,
 }) {
   const territoryId = territoryKey(territory);
   const safeTerritoryId = safeSlug(territoryId);
+  const name = territory.name || territoryId;
   const assignedPair = territory.assigned_pair || [];
   const pairPersonas = assignedPair
     .map((pid) => personas.find((p) => p.id === pid))
     .filter(Boolean);
-  const emit = (msg) => {
-    if (onProgress) onProgress(`[${safeTerritoryId}] ${msg}`);
-  };
 
-  // Persist the safe slug as territory_id so all downstream consumers (inspect
-  // builder, log filenames, anchor IDs in the SPA) work from the same sanitised
-  // value. The full territory object remains in coordinator_decisions.initial.
-  const result = {
-    territory_id: safeTerritoryId,
-    candidate_questions: [],
-    adversarial_marks: [],
-    aligned_questions: [],
-    researcher_reports: [],
-    observations: [],
-    moves: [],
-    surviving_claims: [],
-    terminated_by: null,
-  };
+  const result = previousResult
+    ? { ...previousResult }
+    : {
+        // Persist the safe slug as territory_id so all downstream consumers
+        // (inspect builder, log filenames, anchor IDs in the SPA) work from
+        // the same sanitised value. The full territory object remains in
+        // coordinator_decisions.initial.
+        territory_id: safeTerritoryId,
+        candidate_questions: [],
+        adversarial_marks: [],
+        aligned_questions: [],
+        researcher_reports: [],
+        observations: [],
+        moves: [],
+        surviving_claims: [],
+        terminated_by: null,
+      };
 
   // --- 5.4a Independent Ideation ---
-  emit('ideation start');
   const ideationLog = `pair-${safeTerritoryId}-ideation`;
-  const ideation = await withRetry(
-    () =>
-      Promise.all(
-        pairPersonas.map((persona) =>
-          runIdeation({ client, idea, model, budget, territory, persona })
-        )
-      ),
-    {
-      logFirstError: (err) =>
-        appendLog(idea.id, ideationLog, {
-          kind: 'retry_after_error',
-          payload: { reason: err.message },
-        }),
-    }
-  );
-  if (!ideation.ok) {
-    result.terminated_by = 'ideation_failure';
-    await appendLog(idea.id, ideationLog, {
-      kind: 'abort',
-      payload: { reason: ideation.retryError.message, first_error: ideation.firstError.message },
-    });
-    emit(`ideation failed: ${ideation.retryError.message}`);
-    return result;
-  }
-  const ideationResults = ideation.value;
-
-  let cqCounter = 0;
-  for (const personaResult of ideationResults) {
-    for (const cq of personaResult.candidate_questions) {
-      cqCounter += 1;
-      result.candidate_questions.push({
-        candidate_id: `cq_${safeTerritoryId}_${String(cqCounter).padStart(3, '0')}`,
-        by_persona_id: personaResult.persona_id,
-        ...cq,
+  if (!isSubStageComplete(wgProgressValue, 'ideation')) {
+    onProgress?.(`[${name}] ideation start`);
+    const ideation = await withRetry(
+      () =>
+        Promise.all(
+          pairPersonas.map((persona) =>
+            runIdeation({ client, idea, model, budget, territory, persona })
+          )
+        ),
+      {
+        logFirstError: (err) =>
+          appendLog(idea.id, ideationLog, {
+            kind: 'retry_after_error',
+            payload: { reason: err.message },
+          }),
+      }
+    );
+    if (!ideation.ok) {
+      result.terminated_by = 'ideation_failure';
+      await appendLog(idea.id, ideationLog, {
+        kind: 'abort',
+        payload: { reason: ideation.retryError.message, first_error: ideation.firstError.message },
       });
+      return result;
     }
+    const ideationResults = ideation.value;
+    let cqCounter = 0;
+    for (const personaResult of ideationResults) {
+      for (const cq of personaResult.candidate_questions) {
+        cqCounter += 1;
+        result.candidate_questions.push({
+          candidate_id: `cq_${safeTerritoryId}_${String(cqCounter).padStart(3, '0')}`,
+          by_persona_id: personaResult.persona_id,
+          ...cq,
+        });
+      }
+    }
+    onProgress?.(`[${name}] ideation done (${result.candidate_questions.length} candidates)`);
+    if (cancellationToken?.requested) {
+      throw new CancellationError(`cancelled at ${territoryId} ideation`);
+    }
+    await onCheckpoint?.({ partialResult: result, completedSubStage: 'ideation' });
+  } else {
+    onProgress?.(`[${name}] ideation cached (${result.candidate_questions.length} candidates)`);
   }
-
-  emit(`ideation done (${result.candidate_questions.length} candidates)`);
 
   // --- 5.4b Adversarial Pre-check ---
-  emit('adversarial pre-check start');
   const adversarialLog = `pair-${safeTerritoryId}-adversarial`;
-  try {
-    const adversarialResults = await Promise.all(
-      pairPersonas.map((persona) => {
-        const otherCandidates = result.candidate_questions.filter(
-          (c) => c.by_persona_id !== persona.id
-        );
-        return runAdversarialMark({
+  if (!isSubStageComplete(wgProgressValue, 'adversarial')) {
+    try {
+      const adversarialResults = await Promise.all(
+        pairPersonas.map((persona) => {
+          const otherCandidates = result.candidate_questions.filter(
+            (c) => c.by_persona_id !== persona.id
+          );
+          return runAdversarialMark({
+            client,
+            idea,
+            model,
+            budget,
+            territory,
+            persona,
+            candidateQuestions: otherCandidates,
+          });
+        })
+      );
+      for (const { marks } of adversarialResults) {
+        result.adversarial_marks.push(...marks);
+      }
+    } catch (err) {
+      // Failure here doesn't abort; candidates remain unmarked.
+      await appendLog(idea.id, adversarialLog, {
+        kind: 'partial_failure',
+        payload: { reason: err.message },
+      });
+    }
+    if (cancellationToken?.requested) {
+      throw new CancellationError(`cancelled at ${territoryId} adversarial`);
+    }
+    await onCheckpoint?.({ partialResult: result, completedSubStage: 'adversarial' });
+  } else {
+    onProgress?.(`[${name}] adversarial cached (${result.adversarial_marks.length} marks)`);
+  }
+
+  // --- 5.4c Alignment Debate ---
+  const alignmentLog = `pair-${safeTerritoryId}-alignment`;
+  if (!isSubStageComplete(wgProgressValue, 'alignment')) {
+    let alignmentMoveCount = 0;
+    let alignmentHistory = [];
+    let survivingCandidateIds = result.candidate_questions.map((c) => c.candidate_id);
+
+    for (let turn = 0; turn < ALIGNMENT_MOVE_BUDGET; turn++) {
+      const persona = pairPersonas[turn % 2];
+      let move;
+      try {
+        move = await runAlignmentMove({
           client,
           idea,
           model,
           budget,
           territory,
           persona,
-          candidateQuestions: otherCandidates,
+          candidateQuestions: result.candidate_questions,
+          adversarialMarks: result.adversarial_marks,
+          history: alignmentHistory,
         });
-      })
-    );
-    for (const { marks } of adversarialResults) {
-      result.adversarial_marks.push(...marks);
+      } catch (err) {
+        await appendLog(idea.id, alignmentLog, {
+          kind: 'move_error',
+          payload: { turn, reason: err.message },
+        });
+        break;
+      }
+
+      if (!move) break;
+
+      const moveRecord = {
+        move_id: alignmentMoveId(safeTerritoryId, alignmentMoveCount + 1),
+        stage: 'alignment',
+        by_persona_id: persona.id,
+        ...move,
+      };
+      alignmentHistory.push(moveRecord);
+      result.moves.push(moveRecord);
+      alignmentMoveCount += 1;
+
+      // Drop eliminates the candidate; Defer marks it as "set aside" but does NOT
+      // eliminate it (it remains in the surviving set so the deterministic post-step
+      // can still pick it as a minority-protection slot if no other candidate exists).
+      if (move.type === 'Drop' && move.candidate_id) {
+        survivingCandidateIds = survivingCandidateIds.filter((id) => id !== move.candidate_id);
+      }
+
+      // Termination signal: an explicit `is_final: true` on the move. The earlier
+      // prose substring check (`content.includes('[done]')`) was too fragile —
+      // persona content may legitimately mention "[done]" without intending termination.
+      if (move.is_final === true) break;
     }
-  } catch (err) {
-    // Failure here doesn't abort; candidates remain unmarked.
-    await appendLog(idea.id, adversarialLog, {
-      kind: 'partial_failure',
-      payload: { reason: err.message },
+
+    // Deterministic post-step: build aligned_questions.
+    result.aligned_questions = selectAlignedQuestions({
+      alignmentSurvivors: result.candidate_questions.filter((c) =>
+        survivingCandidateIds.includes(c.candidate_id)
+      ),
+      marks: result.adversarial_marks,
+      personas: pairPersonas,
     });
-    emit(`adversarial partial failure: ${err.message}`);
-  }
-  emit(`adversarial done (${result.adversarial_marks.length} marks)`);
 
-  // --- 5.4c Alignment Debate ---
-  emit('alignment debate start');
-  const alignmentLog = `pair-${safeTerritoryId}-alignment`;
-  let alignmentMoveCount = 0;
-  let alignmentHistory = [];
-  let survivingCandidateIds = result.candidate_questions.map((c) => c.candidate_id);
-
-  for (let turn = 0; turn < ALIGNMENT_MOVE_BUDGET; turn++) {
-    const persona = pairPersonas[turn % 2];
-    let move;
-    try {
-      move = await runAlignmentMove({
-        client,
-        idea,
-        model,
-        budget,
-        territory,
-        persona,
-        candidateQuestions: result.candidate_questions,
-        adversarialMarks: result.adversarial_marks,
-        history: alignmentHistory,
-      });
-    } catch (err) {
-      await appendLog(idea.id, alignmentLog, {
-        kind: 'move_error',
-        payload: { turn, reason: err.message },
-      });
-      break;
+    if (result.aligned_questions.length < 2) {
+      result.terminated_by = 'alignment_failure';
+      return result;
     }
 
-    if (!move) break;
-
-    const moveRecord = {
-      move_id: alignmentMoveId(safeTerritoryId, alignmentMoveCount + 1),
-      stage: 'alignment',
-      by_persona_id: persona.id,
-      ...move,
-    };
-    alignmentHistory.push(moveRecord);
-    result.moves.push(moveRecord);
-    alignmentMoveCount += 1;
-
-    // Drop eliminates the candidate; Defer marks it as "set aside" but does NOT
-    // eliminate it (it remains in the surviving set so the deterministic post-step
-    // can still pick it as a minority-protection slot if no other candidate exists).
-    if (move.type === 'Drop' && move.candidate_id) {
-      survivingCandidateIds = survivingCandidateIds.filter((id) => id !== move.candidate_id);
+    if (cancellationToken?.requested) {
+      throw new CancellationError(`cancelled at ${territoryId} alignment`);
     }
-
-    // Termination signal: an explicit `is_final: true` on the move. The earlier
-    // prose substring check (`content.includes('[done]')`) was too fragile —
-    // persona content may legitimately mention "[done]" without intending termination.
-    if (move.is_final === true) break;
-  }
-
-  // Deterministic post-step: build aligned_questions.
-  result.aligned_questions = selectAlignedQuestions({
-    alignmentSurvivors: result.candidate_questions.filter((c) =>
-      survivingCandidateIds.includes(c.candidate_id)
-    ),
-    marks: result.adversarial_marks,
-    personas: pairPersonas,
-  });
-
-  emit(
-    `alignment done (${alignmentMoveCount} moves, ${result.aligned_questions.length} aligned)`
-  );
-
-  if (result.aligned_questions.length < 2) {
-    result.terminated_by = 'alignment_failure';
-    emit('alignment failure (too few aligned questions)');
-    return result;
+    await onCheckpoint?.({ partialResult: result, completedSubStage: 'alignment' });
+  } else {
+    onProgress?.(`[${name}] alignment cached (${result.aligned_questions.length} aligned)`);
   }
 
   // --- 5.4d Researcher Delegation ---
-  emit(`researcher start (${result.aligned_questions.length} questions)`);
   // Stream researcher results: each aligned-question researcher runs concurrently
   // but each one's result is processed as it arrives, so a slow researcher cannot
   // block the synchronous shape-assignment loop. Final shape preserves order
   // by aligned_id for downstream determinism.
   const personaLenses = pairPersonas.map((p) => p.id);
   const researcherLog = `pair-${safeTerritoryId}-researcher`;
-  async function researchOne(aq) {
-    const attempt = await withRetry(
-      () =>
-        runJointResearcher({
-          client,
-          idea,
-          model,
-          budget,
-          alignedQuestion: aq,
-          territory,
-          personaLenses,
-        }),
-      {
-        logFirstError: (err) =>
-          appendLog(idea.id, researcherLog, {
-            kind: 'retry_after_error',
-            payload: { aligned_id: aq.aligned_id, reason: err.message },
+
+  if (!isSubStageComplete(wgProgressValue, 'researcher')) {
+    onProgress?.(`[${name}] researcher start`);
+
+    async function researchOne(aq) {
+      const attempt = await withRetry(
+        () =>
+          runJointResearcher({
+            client,
+            idea,
+            model,
+            budget,
+            alignedQuestion: aq,
+            territory,
+            personaLenses,
           }),
-      }
-    );
-    if (attempt.ok) return attempt.value;
-    return {
-      outcome: 'dead_end',
-      findings: [],
-      search_trace: [],
-      _error: attempt.retryError.message,
-    };
+        {
+          logFirstError: (err) =>
+            appendLog(idea.id, researcherLog, {
+              kind: 'retry_after_error',
+              payload: { aligned_id: aq.aligned_id, reason: err.message },
+            }),
+        }
+      );
+      if (attempt.ok) return attempt.value;
+      return {
+        outcome: 'dead_end',
+        findings: [],
+        search_trace: [],
+        _error: attempt.retryError.message,
+      };
+    }
+
+    const reports = await Promise.all(result.aligned_questions.map(researchOne));
+    let rrCounter = 0;
+    for (let i = 0; i < reports.length; i++) {
+      const aq = result.aligned_questions[i];
+      const report = reports[i];
+      rrCounter += 1;
+      const findings = (report.findings || []).map((f, fi) => ({
+        finding_id: `f_${aq.aligned_id}_${String(fi + 1).padStart(2, '0')}`,
+        ...f,
+      }));
+      result.researcher_reports.push({
+        report_id: `rr_${String(rrCounter).padStart(3, '0')}`,
+        aligned_id: aq.aligned_id,
+        outcome: report.outcome,
+        findings,
+        search_trace: report.search_trace || [],
+      });
+    }
+
+    const usefulReportsCheck = result.researcher_reports.filter((r) => r.findings.length > 0);
+    if (usefulReportsCheck.length === 0) {
+      result.terminated_by = 'all_dead_end';
+      // No checkpoint — final loop in runWorkingGroupsConcurrently marks complete.
+      return result;
+    }
+
+    onProgress?.(`[${name}] researcher done (${result.researcher_reports.length} reports)`);
+    if (cancellationToken?.requested) {
+      throw new CancellationError(`cancelled at ${territoryId} researcher`);
+    }
+    await onCheckpoint?.({ partialResult: result, completedSubStage: 'researcher' });
+  } else {
+    onProgress?.(`[${name}] researcher cached (${result.researcher_reports.length} reports)`);
   }
 
-  const reports = await Promise.all(result.aligned_questions.map(researchOne));
-  let rrCounter = 0;
-  for (let i = 0; i < reports.length; i++) {
-    const aq = result.aligned_questions[i];
-    const report = reports[i];
-    rrCounter += 1;
-    const findings = (report.findings || []).map((f, fi) => ({
-      finding_id: `f_${aq.aligned_id}_${String(fi + 1).padStart(2, '0')}`,
-      ...f,
-    }));
-
-    result.researcher_reports.push({
-      report_id: `rr_${String(rrCounter).padStart(3, '0')}`,
-      aligned_id: aq.aligned_id,
-      outcome: report.outcome,
-      findings,
-      search_trace: report.search_trace || [],
-    });
-  }
-
+  // Compute useful reports and findings index (used by both observation and debate).
   const usefulReports = result.researcher_reports.filter((r) => r.findings.length > 0);
-  emit(
-    `researcher done (${result.researcher_reports.length} reports, ${usefulReports.length} with findings)`
-  );
-  if (usefulReports.length === 0) {
-    result.terminated_by = 'all_dead_end';
-    emit('all researchers dead-ended');
-    return result;
-  }
-
-  // Build flat finding index for easy lookup.
   const allFindings = result.researcher_reports.flatMap((r) => r.findings);
 
   // --- 5.4e Independent Observation ---
-  emit('observation start');
   const observationLog = `pair-${safeTerritoryId}-observation`;
-  let obsCounter = 0;
+  if (!isSubStageComplete(wgProgressValue, 'observation')) {
+    onProgress?.(`[${name}] observation start`);
+    let obsCounter = result.observations.length; // preserve existing counter offset on resume
 
-  const observationWork = pairPersonas.flatMap((persona) =>
-    usefulReports.map((report) => ({ persona, report }))
-  );
+    const observationWork = pairPersonas.flatMap((persona) =>
+      usefulReports.map((report) => ({ persona, report }))
+    );
 
-  const observationSettled = await Promise.allSettled(
-    observationWork.map(({ persona, report }) =>
-      runObservation({
-        client,
-        idea,
-        model,
-        budget,
-        territory,
-        persona,
-        report,
-        allReports: usefulReports,
-      })
-    )
-  );
-
-  for (let i = 0; i < observationWork.length; i++) {
-    const { persona, report } = observationWork[i];
-    const settled = observationSettled[i];
-    let observations;
-    if (settled.status === 'fulfilled') {
-      observations = settled.value.observations;
-    } else {
-      // Retry once.
-      try {
-        const retry = await runObservation({
+    const observationSettled = await Promise.allSettled(
+      observationWork.map(({ persona, report }) =>
+        runObservation({
           client,
           idea,
           model,
@@ -438,127 +482,127 @@ async function runWorkingGroup({
           persona,
           report,
           allReports: usefulReports,
-        });
-        observations = retry.observations;
-      } catch (retryErr) {
-        // Synthesize fallback.
-        const firstFindingId = report.findings[0]?.finding_id;
-        observations = [
-          {
-            content: '[synthesized: no observation produced]',
-            cited_finding_ids: firstFindingId ? [firstFindingId] : [],
-          },
-        ];
-        await appendLog(idea.id, observationLog, {
-          kind: 'synthesized_observation',
-          payload: { persona_id: persona.id, report_id: report.report_id, reason: retryErr.message },
+        })
+      )
+    );
+
+    for (let i = 0; i < observationWork.length; i++) {
+      const { persona, report } = observationWork[i];
+      const settled = observationSettled[i];
+      let observations;
+      if (settled.status === 'fulfilled') {
+        observations = settled.value.observations;
+      } else {
+        // Retry once.
+        try {
+          const retry = await runObservation({
+            client,
+            idea,
+            model,
+            budget,
+            territory,
+            persona,
+            report,
+            allReports: usefulReports,
+          });
+          observations = retry.observations;
+        } catch (retryErr) {
+          // Synthesize fallback.
+          const firstFindingId = report.findings[0]?.finding_id;
+          observations = [
+            {
+              content: '[synthesized: no observation produced]',
+              cited_finding_ids: firstFindingId ? [firstFindingId] : [],
+            },
+          ];
+          await appendLog(idea.id, observationLog, {
+            kind: 'synthesized_observation',
+            payload: { persona_id: persona.id, report_id: report.report_id, reason: retryErr.message },
+          });
+        }
+      }
+
+      for (const obs of observations) {
+        obsCounter += 1;
+        result.observations.push({
+          observation_id: `o_${safeTerritoryId}_${String(obsCounter).padStart(3, '00')}`,
+          by_persona_id: persona.id,
+          report_id: report.report_id,
+          ...obs,
         });
       }
     }
 
-    for (const obs of observations) {
-      obsCounter += 1;
-      result.observations.push({
-        observation_id: `o_${safeTerritoryId}_${String(obsCounter).padStart(3, '0')}`,
-        by_persona_id: persona.id,
-        report_id: report.report_id,
-        ...obs,
-      });
+    onProgress?.(`[${name}] observation done (${result.observations.length} observations)`);
+    if (cancellationToken?.requested) {
+      throw new CancellationError(`cancelled at ${territoryId} observation`);
     }
+    await onCheckpoint?.({ partialResult: result, completedSubStage: 'observation' });
+  } else {
+    onProgress?.(`[${name}] observation cached (${result.observations.length} observations)`);
   }
-
-  emit(`observation done (${result.observations.length} observations)`);
 
   // --- 5.4f Pair Debate ---
-  emit('pair debate start');
   const debateLog = `pair-${safeTerritoryId}-debate`;
-  let debateMoveCount = 0;
-  let debateHistory = [];
+  if (!isSubStageComplete(wgProgressValue, 'debate')) {
+    onProgress?.(`[${name}] debate start`);
+    let debateMoveCount = 0;
+    let debateHistory = [];
 
-  // Opening claims in parallel.
-  const openingClaims = await Promise.allSettled(
-    pairPersonas.map((persona) =>
-      runDebateMove({
-        client,
-        idea,
-        model,
-        budget,
-        territory,
-        persona,
-        history: [],
+    // Opening claims in parallel.
+    const openingClaims = await Promise.allSettled(
+      pairPersonas.map((persona) =>
+        runDebateMove({
+          client,
+          idea,
+          model,
+          budget,
+          territory,
+          persona,
+          history: [],
+          observations: result.observations,
+          findings: allFindings,
+          isOpening: true,
+        })
+      )
+    );
+
+    for (let i = 0; i < openingClaims.length; i++) {
+      const settled = openingClaims[i];
+      const persona = pairPersonas[i];
+      if (settled.status !== 'fulfilled' || !settled.value) continue;
+
+      const move = settled.value;
+      debateMoveCount += 1;
+      const validation = validateDebateMove(move, {
         observations: result.observations,
         findings: allFindings,
-        isOpening: true,
-      })
-    )
-  );
-
-  for (let i = 0; i < openingClaims.length; i++) {
-    const settled = openingClaims[i];
-    const persona = pairPersonas[i];
-    if (settled.status !== 'fulfilled' || !settled.value) continue;
-
-    const move = settled.value;
-    debateMoveCount += 1;
-    const validation = validateDebateMove(move, {
-      observations: result.observations,
-      findings: allFindings,
-    });
-    if (!validation.valid) {
-      await appendLog(idea.id, debateLog, {
-        kind: 'rejected_move',
-        payload: { persona_id: persona.id, errors: validation.errors },
       });
-      continue;
+      if (!validation.valid) {
+        await appendLog(idea.id, debateLog, {
+          kind: 'rejected_move',
+          payload: { persona_id: persona.id, errors: validation.errors },
+        });
+        continue;
+      }
+
+      const moveRecord = {
+        move_id: debateMoveId(safeTerritoryId, debateMoveCount),
+        stage: 'debate',
+        by_persona_id: persona.id,
+        ...move,
+      };
+      debateHistory.push(moveRecord);
+      result.moves.push(moveRecord);
     }
 
-    const moveRecord = {
-      move_id: debateMoveId(safeTerritoryId, debateMoveCount),
-      stage: 'debate',
-      by_persona_id: persona.id,
-      ...move,
-    };
-    debateHistory.push(moveRecord);
-    result.moves.push(moveRecord);
-  }
+    // Sequential debate turns.
+    let debateTurn = debateHistory.length;
+    while (debateTurn < PAIR_MOVE_BUDGET) {
+      if (detectConcessionTermination(debateHistory)) break;
 
-  // Sequential debate turns.
-  let debateTurn = debateHistory.length;
-  while (debateTurn < PAIR_MOVE_BUDGET) {
-    if (detectConcessionTermination(debateHistory)) break;
-
-    const persona = pairPersonas[debateTurn % 2];
-    let move;
-    try {
-      move = await runDebateMove({
-        client,
-        idea,
-        model,
-        budget,
-        territory,
-        persona,
-        history: debateHistory,
-        observations: result.observations,
-        findings: allFindings,
-        isOpening: false,
-      });
-    } catch (err) {
-      await appendLog(idea.id, debateLog, {
-        kind: 'move_error',
-        payload: { turn: debateTurn, reason: err.message },
-      });
-      break;
-    }
-
-    if (!move) break;
-
-    const validation = validateDebateMove(move, {
-      observations: result.observations,
-      findings: allFindings,
-    });
-
-    if (!validation.valid) {
-      // Re-prompt once.
+      const persona = pairPersonas[debateTurn % 2];
+      let move;
       try {
         move = await runDebateMove({
           client,
@@ -571,55 +615,88 @@ async function runWorkingGroup({
           observations: result.observations,
           findings: allFindings,
           isOpening: false,
-          repromptReason: validation.errors.join('; '),
         });
-        const revalidation = validateDebateMove(move, {
-          observations: result.observations,
-          findings: allFindings,
+      } catch (err) {
+        await appendLog(idea.id, debateLog, {
+          kind: 'move_error',
+          payload: { turn: debateTurn, reason: err.message },
         });
-        if (!revalidation.valid) {
-          await appendLog(idea.id, debateLog, {
-            kind: 'rejected_move',
-            payload: { turn: debateTurn, errors: revalidation.errors },
+        break;
+      }
+
+      if (!move) break;
+
+      const validation = validateDebateMove(move, {
+        observations: result.observations,
+        findings: allFindings,
+      });
+
+      if (!validation.valid) {
+        // Re-prompt once.
+        try {
+          move = await runDebateMove({
+            client,
+            idea,
+            model,
+            budget,
+            territory,
+            persona,
+            history: debateHistory,
+            observations: result.observations,
+            findings: allFindings,
+            isOpening: false,
+            repromptReason: validation.errors.join('; '),
           });
+          const revalidation = validateDebateMove(move, {
+            observations: result.observations,
+            findings: allFindings,
+          });
+          if (!revalidation.valid) {
+            await appendLog(idea.id, debateLog, {
+              kind: 'rejected_move',
+              payload: { turn: debateTurn, errors: revalidation.errors },
+            });
+            debateTurn += 1;
+            continue;
+          }
+        } catch (err) {
           debateTurn += 1;
           continue;
         }
-      } catch (err) {
-        debateTurn += 1;
-        continue;
       }
+
+      debateMoveCount += 1;
+      const moveRecord = {
+        move_id: debateMoveId(safeTerritoryId, debateMoveCount),
+        stage: 'debate',
+        by_persona_id: persona.id,
+        ...move,
+      };
+      debateHistory.push(moveRecord);
+      result.moves.push(moveRecord);
+      debateTurn += 1;
     }
 
-    debateMoveCount += 1;
-    const moveRecord = {
-      move_id: debateMoveId(safeTerritoryId, debateMoveCount),
-      stage: 'debate',
-      by_persona_id: persona.id,
-      ...move,
-    };
-    debateHistory.push(moveRecord);
-    result.moves.push(moveRecord);
-    debateTurn += 1;
+    const debateMovesOnly = debateHistory;
+    result.surviving_claims = extractSurvivingClaims(debateMovesOnly).map((sc) => {
+      const originatingMove = debateMovesOnly.find((m) => m.move_id === sc.originating_move_id);
+      return {
+        ...sc,
+        evidence_refs: originatingMove?.evidence_refs || [],
+      };
+    });
+
+    result.terminated_by = detectConcessionTermination(debateHistory)
+      ? 'mutual_concession'
+      : 'budget_exhausted';
+
+    await onCheckpoint?.({ partialResult: result, completedSubStage: 'debate' });
+  } else {
+    const debateMoveCount = (result.moves || []).filter((m) => m.stage === 'debate').length;
+    onProgress?.(`[${name}] debate cached (${debateMoveCount} moves)`);
   }
-
-  const debateMovesOnly = debateHistory;
-  result.surviving_claims = extractSurvivingClaims(debateMovesOnly).map((sc) => {
-    const originatingMove = debateMovesOnly.find((m) => m.move_id === sc.originating_move_id);
-    return {
-      ...sc,
-      evidence_refs: originatingMove?.evidence_refs || [],
-    };
-  });
-
-  result.terminated_by = detectConcessionTermination(debateHistory)
-    ? 'mutual_concession'
-    : 'budget_exhausted';
-  emit(
-    `debate done (${debateMoveCount} moves, ${result.surviving_claims.length} claims, ${result.terminated_by})`
-  );
 
   return result;
 }
 
-module.exports = { runWorkingGroup, selectAlignedQuestions };
+module.exports = { runWorkingGroup, selectAlignedQuestions, isSubStageComplete, SUBSTAGE_ORDER };
