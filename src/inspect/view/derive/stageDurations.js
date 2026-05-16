@@ -1,4 +1,4 @@
-const STAGES = [
+const STAGES_V4 = [
   { key: 'discovery', label: 'Discovery', detail_ref: 'discovery' },
   { key: 'coordinator_initial', label: 'Coordinator — initial', detail_ref: 'coordinator' },
   { key: 'debates', label: 'Pair debates', detail_ref: 'debates' },
@@ -7,6 +7,18 @@ const STAGES = [
   { key: 'coordinator_spawn', label: 'Coordinator — spawn', detail_ref: 'coordinator' },
   { key: 'synthesis', label: 'Synthesis', detail_ref: 'synthesis' },
 ];
+
+const STAGES_V5 = [
+  { key: 'discovery', label: 'Discovery', detail_ref: 'discovery' },
+  { key: 'coordinator_initial', label: 'Coordinator — territories', detail_ref: 'coordinator' },
+  { key: 'debates', label: 'Working groups', detail_ref: 'debates' },
+  { key: 'cross_pollination', label: 'Cross-pollination', detail_ref: 'forum' },
+  { key: 'forum', label: 'Forum', detail_ref: 'forum' },
+  { key: 'synthesis', label: 'Synthesis', detail_ref: 'synthesis' },
+];
+
+// Keep STAGES as the v4 default for backward compat with any direct imports.
+const STAGES = STAGES_V4;
 
 function computeDuration(started_at, completed_at) {
   if (!started_at || !completed_at) return null;
@@ -27,12 +39,16 @@ function resolveStatus({ started_at, completed_at, marker }) {
 function deriveStageDurations(loaderInput) {
   const enr = loaderInput.enrichments;
   const investigation = loaderInput.index?.investigation ?? {};
+  const schemaVersion = investigation.schema_version ?? 'v4';
   const debates = investigation.pair_debates ?? [];
+
+  // For v4: bracket timings from pair-{sqId} logs; for v5: pair-{tid}-debate logs.
   const debateBracket = (() => {
     let earliest = null;
     let latest = null;
     for (const debate of debates) {
-      const t = enr.debates[debate.sub_question_id]?.timings;
+      const key = debate.sub_question_id ?? debate.territory_id;
+      const t = enr.debates[key]?.timings;
       if (!t) continue;
       if (t.started_at && (!earliest || t.started_at < earliest)) earliest = t.started_at;
       if (t.completed_at && (!latest || t.completed_at > latest)) latest = t.completed_at;
@@ -48,6 +64,7 @@ function deriveStageDurations(loaderInput) {
   const synth = investigation.synthesis;
 
   const initialSqCount = investigation.coordinator_decisions?.initial?.sub_questions?.length ?? 0;
+  const initialTerritoryCount = investigation.coordinator_decisions?.initial?.territories?.length ?? 0;
   const spawnSqCount = investigation.coordinator_decisions?.spawn?.sub_questions?.length ?? 0;
   const totalMoves = debates.reduce((acc, d) => acc + (d.moves?.length ?? 0), 0);
   const survivingClaims = debates.reduce((acc, d) => acc + (d.surviving_claims?.length ?? 0), 0);
@@ -65,8 +82,14 @@ function deriveStageDurations(loaderInput) {
       const candidates = investigation.perspective_discovery?.candidate_personas?.length ?? 0;
       return `${queries} search ${queries === 1 ? 'query' : 'queries'} · ${selected}/${candidates} personas selected`;
     },
-    coordinator_initial: () => `${initialSqCount} sub-question${initialSqCount === 1 ? '' : 's'}`,
-    debates: () => `${totalMoves} moves · ${survivingClaims} surviving claim${survivingClaims === 1 ? '' : 's'}`,
+    coordinator_initial: () =>
+      schemaVersion === 'v5'
+        ? `${initialTerritoryCount} ${initialTerritoryCount === 1 ? 'territory' : 'territories'}`
+        : `${initialSqCount} sub-question${initialSqCount === 1 ? '' : 's'}`,
+    debates: () =>
+      schemaVersion === 'v5'
+        ? `${debates.length} ${debates.length === 1 ? 'working group' : 'working groups'} · ${totalMoves} moves`
+        : `${totalMoves} moves · ${survivingClaims} surviving claim${survivingClaims === 1 ? '' : 's'}`,
     cross_pollination: () => `${reactionCount} reaction${reactionCount === 1 ? '' : 's'}`,
     forum: () => `${forumNodeCount} node${forumNodeCount === 1 ? '' : 's'}`,
     coordinator_spawn: () => {
@@ -98,7 +121,8 @@ function deriveStageDurations(loaderInput) {
       : { started_at: null, completed_at: null },
   };
 
-  return STAGES.map(({ key, label, detail_ref }) => {
+  const stages = schemaVersion === 'v5' ? STAGES_V5 : STAGES_V4;
+  return stages.map(({ key, label, detail_ref }) => {
     const raw = stageInputs[key] ?? {};
     const started_at = raw.started_at ?? null;
     const completed_at = raw.completed_at ?? null;

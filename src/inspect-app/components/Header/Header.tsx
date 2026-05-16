@@ -87,6 +87,15 @@ export function Header() {
               max={view.budget.max_total_tokens}
             />
           </Grid.Col>
+          {view.budget.max_researcher_tool_calls != null ? (
+            <Grid.Col span={{ base: 12, md: 6 }}>
+              <BudgetBar
+                label="Researcher tool calls"
+                used={view.budget.used_researcher_tool_calls ?? 0}
+                max={view.budget.max_researcher_tool_calls}
+              />
+            </Grid.Col>
+          ) : null}
         </Grid>
       </Stack>
     </Section>

@@ -26,9 +26,12 @@ const {
   ideaLogPath,
   listIdeas,
   listIdeasByStatus,
+  normalizeLoadedIdea,
   readIdea,
   readJsonFile,
   readLog,
+  safeSlug,
+  stripControlChars,
   writeIdea,
 } = require('../src/storage');
 
@@ -53,13 +56,15 @@ test('createIdea returns spec-shaped schema', () => {
   assert.equal(idea.parent_id, null);
   assert.ok(idea.investigation);
   assert.equal(idea.investigation.completed_at, null);
-  assert.equal(idea.investigation.budget.max_executor_calls, 60);
-  assert.equal(idea.investigation.budget.max_total_tokens, 500000);
+  assert.equal(idea.investigation.budget.max_executor_calls, 180);
+  assert.equal(idea.investigation.budget.max_total_tokens, 1_500_000);
+  assert.equal(idea.investigation.budget.max_researcher_tool_calls, 60);
+  assert.equal(idea.investigation.schema_version, 'v5');
   assert.deepEqual(idea.investigation.perspective_discovery.fixed_personas, [
     'skeptic',
     'builder',
   ]);
-  assert.deepEqual(idea.investigation.coordinator_decisions, { initial: null, spawn: null });
+  assert.deepEqual(idea.investigation.coordinator_decisions, { initial: null });
   assert.ok(Array.isArray(idea.investigation.pair_debates));
   assert.ok(Array.isArray(idea.investigation.cross_pollination));
   assert.equal(idea.investigation.synthesis, null);
@@ -234,4 +239,80 @@ test('appendLog/readLog round-trip writes JSONL records with timestamps', async 
   } finally {
     await fsp.rm(ideaDir(id), { recursive: true, force: true });
   }
+});
+
+// --- normalizeLoadedIdea ---
+
+test('normalizeLoadedIdea tags legacy idea without schema_version as v4', () => {
+  const legacy = { investigation: { pair_debates: [{ sub_question_id: 'sq_001' }] } };
+  normalizeLoadedIdea(legacy);
+  assert.equal(legacy.investigation.schema_version, 'v4');
+});
+
+test('normalizeLoadedIdea tags an idea with territory_id pair_debates as v5', () => {
+  // Structural heuristic: a missing schema_version with v5-shape data should still
+  // resolve to v5 so the inspector doesn't silently render an empty view.
+  const partial = { investigation: { pair_debates: [{ territory_id: 't_001' }] } };
+  normalizeLoadedIdea(partial);
+  assert.equal(partial.investigation.schema_version, 'v5');
+});
+
+test('normalizeLoadedIdea tags an idea with coordinator territories as v5', () => {
+  const partial = {
+    investigation: {
+      pair_debates: [],
+      coordinator_decisions: { initial: { territories: [{ id: 't_001' }] } },
+    },
+  };
+  normalizeLoadedIdea(partial);
+  assert.equal(partial.investigation.schema_version, 'v5');
+});
+
+test('normalizeLoadedIdea leaves an existing schema_version untouched', () => {
+  const v5 = { investigation: { schema_version: 'v5', pair_debates: [] } };
+  normalizeLoadedIdea(v5);
+  assert.equal(v5.investigation.schema_version, 'v5');
+});
+
+test('normalizeLoadedIdea handles null/empty input gracefully', () => {
+  assert.equal(normalizeLoadedIdea(null), null);
+  assert.deepEqual(normalizeLoadedIdea({}), {});
+  assert.deepEqual(normalizeLoadedIdea({ investigation: null }), { investigation: null });
+});
+
+// --- safeSlug ---
+
+test('safeSlug preserves alphanumerics, underscore, hyphen', () => {
+  assert.equal(safeSlug('pair-t_001-debate'), 'pair-t_001-debate');
+  assert.equal(safeSlug('t_001'), 't_001');
+});
+
+test('safeSlug strips path separators and dots', () => {
+  assert.equal(safeSlug('../etc/passwd'), '___etc_passwd');
+  assert.equal(safeSlug('a/b/c'), 'a_b_c');
+  assert.equal(safeSlug('a.b'), 'a_b');
+});
+
+test('safeSlug truncates and never returns empty', () => {
+  const long = 'a'.repeat(200);
+  assert.equal(safeSlug(long).length, 96);
+  assert.equal(safeSlug(''), '_');
+  assert.equal(safeSlug(null), '_');
+});
+
+// --- stripControlChars ---
+
+test('stripControlChars removes ANSI escape sequences from strings', () => {
+  const dirty = 'before\x1b[31mred\x1b[0m after';
+  assert.equal(stripControlChars(dirty), 'before[31mred[0m after');
+});
+
+test('stripControlChars walks arrays and objects recursively', () => {
+  const dirty = { a: '\x07bell', b: ['x\x00null', 'clean'] };
+  assert.deepEqual(stripControlChars(dirty), { a: 'bell', b: ['xnull', 'clean'] });
+});
+
+test('stripControlChars preserves printable text including unicode and newlines', () => {
+  const clean = 'line one\nline two — em-dash 🎯';
+  assert.equal(stripControlChars(clean), clean);
 });

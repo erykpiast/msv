@@ -13,6 +13,7 @@ const {
   moveId,
   validateMoveList,
   validateMoveShape,
+  validateDebateMove,
 } = require('../src/moves');
 
 test('moveId pads sequence', () => {
@@ -294,4 +295,113 @@ test('PAIR_MOVE_BUDGET and CALCIFICATION_REBUT_THRESHOLD match spec', () => {
   assert.equal(PAIR_MOVE_BUDGET, 12);
   assert.equal(CALCIFICATION_REBUT_THRESHOLD, 8);
   assert.equal(CONCESSION_FLOOR, 4);
+});
+
+// --- validateDebateMove (v5) ---
+
+function makeDebateClaim(overrides = {}) {
+  return {
+    type: 'Claim',
+    content: 'Test claim',
+    evidence_basis: 'Some basis',
+    confidence: 7,
+    references_move_id: null,
+    evidence_refs: [{ observation_id: 'o_001' }, { finding_id: 'f_001' }],
+    ...overrides,
+  };
+}
+
+// Test: a valid debate Claim with required observation_id and finding_id passes validation.
+test('validateDebateMove accepts a Claim with valid observation and finding refs', () => {
+  const move = makeDebateClaim();
+  const scope = {
+    observations: [{ observation_id: 'o_001' }],
+    findings: [{ finding_id: 'f_001' }],
+  };
+  const result = validateDebateMove(move, scope);
+  assert.ok(result.valid, `Should be valid but errors: ${result.errors.join('; ')}`);
+});
+
+// Test: a Claim without any evidence_refs is rejected — v5 requires both obs + finding.
+test('validateDebateMove rejects Claim missing evidence_refs entirely', () => {
+  const move = makeDebateClaim({ evidence_refs: undefined });
+  const scope = {
+    observations: [{ observation_id: 'o_001' }],
+    findings: [{ finding_id: 'f_001' }],
+  };
+  const result = validateDebateMove(move, scope);
+  assert.ok(!result.valid);
+  assert.ok(result.errors.some((e) => e.includes('observation_id')));
+  assert.ok(result.errors.some((e) => e.includes('finding_id')));
+});
+
+// Test: a Claim with an observation_id but no finding_id is rejected.
+test('validateDebateMove rejects Claim with observation but no finding ref', () => {
+  const move = makeDebateClaim({ evidence_refs: [{ observation_id: 'o_001' }] });
+  const scope = {
+    observations: [{ observation_id: 'o_001' }],
+    findings: [{ finding_id: 'f_001' }],
+  };
+  const result = validateDebateMove(move, scope);
+  assert.ok(!result.valid);
+  assert.ok(result.errors.some((e) => e.includes('finding_id')));
+});
+
+// Test: a reference to an observation_id not in scope is rejected.
+test('validateDebateMove rejects refs that do not resolve in pair scope', () => {
+  const move = makeDebateClaim({
+    evidence_refs: [{ observation_id: 'o_UNKNOWN' }, { finding_id: 'f_001' }],
+  });
+  const scope = {
+    observations: [{ observation_id: 'o_001' }],
+    findings: [{ finding_id: 'f_001' }],
+  };
+  const result = validateDebateMove(move, scope);
+  assert.ok(!result.valid);
+  assert.ok(result.errors.some((e) => e.includes('o_UNKNOWN')));
+});
+
+// Test: Support/Rebut/Question/Concede moves are not subject to the evidence_refs rule.
+test('validateDebateMove accepts Support move without evidence_refs', () => {
+  const move = {
+    type: 'Support',
+    content: 'I agree',
+    evidence_basis: 'Prior knowledge',
+    confidence: 5,
+    references_move_id: 'm_001',
+  };
+  const scope = { observations: [], findings: [] };
+  const result = validateDebateMove(move, scope);
+  assert.ok(result.valid, `Should be valid but errors: ${result.errors.join('; ')}`);
+});
+
+// Test: a combined-ref entry { observation_id, finding_id } satisfies both checks.
+// This is a likely LLM output shape — the validator must accept it without confusion.
+test('validateDebateMove accepts a single combined { observation_id, finding_id } ref', () => {
+  const move = makeDebateClaim({
+    evidence_refs: [{ observation_id: 'o_001', finding_id: 'f_001' }],
+  });
+  const scope = {
+    observations: [{ observation_id: 'o_001' }],
+    findings: [{ finding_id: 'f_001' }],
+  };
+  const result = validateDebateMove(move, scope);
+  assert.ok(result.valid, `Should be valid but errors: ${result.errors.join('; ')}`);
+});
+
+// Test: duplicate refs do not produce duplicate errors — they should be tolerated.
+test('validateDebateMove tolerates duplicate refs', () => {
+  const move = makeDebateClaim({
+    evidence_refs: [
+      { observation_id: 'o_001' },
+      { observation_id: 'o_001' },
+      { finding_id: 'f_001' },
+    ],
+  });
+  const scope = {
+    observations: [{ observation_id: 'o_001' }],
+    findings: [{ finding_id: 'f_001' }],
+  };
+  const result = validateDebateMove(move, scope);
+  assert.ok(result.valid);
 });

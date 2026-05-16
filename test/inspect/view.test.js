@@ -180,3 +180,59 @@ test('view model: synthesis null on investigating fixture', async () => {
   assert.equal(view.forum.nodes.length, 0);
   assert.deepEqual(view.debates, {});
 });
+
+// --- v5 dispatch path ---
+
+test('buildView routes a v5 idea through working_groups, not debates', async () => {
+  const li = await buildLoaderInput(path.join(FIX, 'ready-v5'));
+  const view = buildView(li);
+
+  assert.equal(view.schema_version, 'v5');
+  // v4 `debates` should be empty for v5 ideas; v5 `working_groups` carries the data.
+  assert.deepEqual(view.debates, {});
+  assert.equal(Object.keys(view.working_groups).length, 1);
+  const wg = view.working_groups['t_001'];
+  assert.ok(wg, 'working group for t_001');
+  assert.equal(wg.territory?.id, 't_001');
+  assert.equal(wg.candidate_questions.length, 1);
+  assert.equal(wg.aligned_questions.length, 1);
+  assert.equal(wg.researcher_reports.length, 1);
+  assert.equal(wg.observations.length, 1);
+  assert.equal(wg.moves.length, 1);
+  assert.equal(wg.surviving_claims.length, 1);
+});
+
+test('buildView v5: coordinator exposes territories, not sub_questions', async () => {
+  const li = await buildLoaderInput(path.join(FIX, 'ready-v5'));
+  const view = buildView(li);
+
+  assert.equal(view.coordinator.territories.length, 1);
+  assert.equal(view.coordinator.territories[0].id, 't_001');
+});
+
+test('buildView v5: stages use v5 labels (6 stages, no coordinator_spawn)', async () => {
+  const li = await buildLoaderInput(path.join(FIX, 'ready-v5'));
+  const view = buildView(li);
+
+  // STAGES_V5 has 6 stages — coordinator_spawn is removed.
+  assert.equal(view.stages.length, 6);
+  assert.ok(!view.stages.some((s) => s.key === 'coordinator_spawn'));
+  const debates = view.stages.find((s) => s.key === 'debates');
+  assert.ok(debates.label.toLowerCase().includes('working'));
+});
+
+test('buildView v5: synthesis exposes question_landscape and budget exposes researcher tool calls', async () => {
+  const li = await buildLoaderInput(path.join(FIX, 'ready-v5'));
+  const view = buildView(li);
+
+  assert.ok(view.synthesis.question_landscape);
+  assert.equal(view.synthesis.question_landscape.length, 1);
+  assert.equal(view.budget.max_researcher_tool_calls, 60);
+  assert.equal(view.budget.used_researcher_tool_calls, 12);
+});
+
+test('buildView v5: forum exposes dead_end_questions (even when empty)', async () => {
+  const li = await buildLoaderInput(path.join(FIX, 'ready-v5'));
+  const view = buildView(li);
+  assert.ok(Array.isArray(view.forum.dead_end_questions));
+});

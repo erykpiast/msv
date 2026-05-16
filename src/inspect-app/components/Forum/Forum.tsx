@@ -1,4 +1,4 @@
-import { Tabs, Stack, Group, Badge, Text, Anchor } from '@mantine/core';
+import { Tabs, Stack, Group, Badge, Text, Anchor, List, Alert } from '@mantine/core';
 import { useState, useEffect } from 'react';
 import { useViewContext } from '../../ViewContext';
 import { Section } from '../../primitives/Section';
@@ -37,6 +37,9 @@ export function Forum() {
     );
   }
 
+  const deadEnds =
+    'dead_end_questions' in view.forum ? view.forum.dead_end_questions : [];
+
   return (
     <Section
       title="Forum"
@@ -48,6 +51,11 @@ export function Forum() {
           <Badge color="red" variant="light">
             {view.forum.contradiction_edges.length} contradictions
           </Badge>
+          {deadEnds.length > 0 ? (
+            <Badge color="orange" variant="light">
+              {deadEnds.length} dead end{deadEnds.length === 1 ? '' : 's'}
+            </Badge>
+          ) : null}
         </Group>
       }
     >
@@ -56,6 +64,7 @@ export function Forum() {
           <Tabs.Tab value="graph">Graph</Tabs.Tab>
           <Tabs.Tab value="threads">Debate threads</Tabs.Tab>
           <Tabs.Tab value="matrix">Persona matrix</Tabs.Tab>
+          {deadEnds.length > 0 ? <Tabs.Tab value="dead_ends">Dead ends</Tabs.Tab> : null}
         </Tabs.List>
         <Tabs.Panel value="graph" pt="md">
           <Stack gap="md">
@@ -72,6 +81,21 @@ export function Forum() {
         <Tabs.Panel value="matrix" pt="md">
           <PersonaMatrix />
         </Tabs.Panel>
+        {deadEnds.length > 0 ? (
+          <Tabs.Panel value="dead_ends" pt="md">
+            <Alert color="orange" variant="light" title={`${deadEnds.length} question${deadEnds.length === 1 ? '' : 's'} reached dead ends`} mb="md">
+              These questions were researched but yielded no usable findings.
+            </Alert>
+            <List spacing="sm">
+              {deadEnds.map((d) => (
+                <List.Item key={d.aligned_id}>
+                  <Text size="sm" fw={500}>{d.aligned_id}</Text>
+                  <Text size="xs" c="dimmed">{d.outcome_summary}</Text>
+                </List.Item>
+              ))}
+            </List>
+          </Tabs.Panel>
+        ) : null}
       </Tabs>
       <NodeDrawer nodeId={selectedNode} onClose={() => setSelectedNode(null)} />
     </Section>

@@ -4,10 +4,10 @@
 
 - Single-user, terminal-only workflow.
 - Local JSON storage under `~/.msv/`.
-- Anthropic model: `claude-sonnet-4-6` (set via `ANTHROPIC_API_KEY`).
-- Typical run target cost: **~$1–3** and **1–3 minutes** per full investigation.
+- Anthropic models: `claude-sonnet-4-6` (all interpretive stages), `claude-haiku-4-5` (synthesizer), via `ANTHROPIC_API_KEY`.
+- Typical run target cost: **~$3–8** and **3–6 minutes** per v5 investigation (web-research-grounded).
 
-The pipeline is documented in detail in [`specs/prototype.md`](specs/prototype.md).
+The pipeline is documented in detail in [`specs/question-machine.md`](specs/question-machine.md) (v5) and [`specs/prototype.md`](specs/prototype.md) (v4 archive).
 
 ## Setup
 
@@ -30,15 +30,21 @@ msv add        # type, then Ctrl-D
 
 ### `msv run [--all | <id>]`
 
-Runs the 7-stage investigation pipeline:
+Runs the v5 question-generation pipeline:
 
 1. Perspective discovery (web-search-grounded persona candidates)
 2. Diversity-aware selection (deterministic)
-3. Coordinator decomposes the topic into sub-questions and pairs personas
-4. Working groups — parallel pair debates with calcification enforcement
+3. Coordinator decomposes the topic into **territories** and pairs personas
+4. **Working groups** (parallel, one per territory) — six sub-stages each:
+   - Independent ideation: each persona generates candidate questions
+   - Adversarial pre-check: other persona marks which questions need research
+   - Alignment debate: personas debate to pick the best questions
+   - Researcher delegation: joint AI researcher (web_search + web_fetch) investigates each aligned question
+   - Independent observation: each persona writes observations from findings
+   - Pair debate: evidence-grounded debate moves with observation/finding citations
 5. Cross-pollination round (deterministic reactor pairing)
-6. Forum aggregation with contradiction detection
-7. Synthesizer produces the user-facing opinionated report
+6. Forum aggregation with contradiction detection + dead-end tracking
+7. Synthesizer produces the user-facing report, question landscape, and dead-end summary
 
 ```bash
 msv run --all
@@ -49,7 +55,15 @@ On failure the idea is left in `investigating` state. To retry, hand-edit `~/.ms
 
 ### `msv inspect <id>`
 
-Boots a local Vite dev server with a React SPA showing the full transcript of an investigation: the search queries discovery ran, every candidate persona (selected and cut), the coordinator's decomposition, every debate move with confidence and `evidence_basis`, the forum graph with contradiction edges, and the synthesis.
+Boots a local Vite dev server with a React SPA showing the full transcript of an investigation. For v5 ideas, the inspector shows:
+
+- Discovery: search queries, candidate personas
+- Territories: coordinator output with assigned pairs
+- Working groups: tabbed view per territory — Ideation, Adversarial marks, Alignment questions, Researcher reports (findings per aligned question), Observations, Pair debate
+- Forum: surviving claims graph, contradiction edges, dead-end panel (v5)
+- Synthesis: headline findings, question landscape (v5), dead-end summary (v5), report
+
+The inspector detects `schema_version` and routes v4 and v5 ideas through separate component trees.
 
 ```bash
 msv inspect 722b7e3c-e231-46c8-84cd-b2f272222323
@@ -57,25 +71,15 @@ msv inspect <id> --no-open    # don't open the browser; print URL only
 msv inspect <id> --port 6000  # pin the port
 ```
 
-The terminal stays attached until Ctrl-C. Editing files under `src/inspect-app/` triggers Vite HMR — the browser updates instantly. Data is read once at mount; re-run `msv inspect <id>` to refresh after a new `msv run`.
-
-Each invocation regenerates `inspect-view.json` next to `index.json` in the idea directory. The file is `.gitignore`d and safe to delete — it always rebuilds from `index.json` + `logs/*.jsonl`.
-
-#### Where things live (`src/inspect-app/`)
-
-- `App.tsx` — Mantine `<AppShell>` layout, mounts every section
-- `components/{Header,Timeline,Discovery,Coordinator,Debate,Forum,Synthesis}/` — one folder per section
-- `theme/personas.ts` — Okabe-Ito palette + deterministic id-to-colour hash. Import `personaColor(id)` everywhere.
-- `hooks/useView.ts` — fetches `/inspect-view.json` once at mount via `use(promise)`
-- Mantine handles layout primitives; Emotion's `css` prop for custom one-off styles. No Tailwind.
-
-The CLI side (`src/inspect/`) is plain JavaScript: `loader/` reads `index.json` + `logs/*.jsonl`, `view/build.js` derives the `InvestigationView` shape, `server.js` boots Vite with a `/inspect-view.json` middleware that streams the rebuilt view to the browser.
+The terminal stays attached until Ctrl-C. Data is read once at mount; re-run `msv inspect <id>` to refresh after a new `msv run`.
 
 ### `msv review`
 
 Shows ready investigations one at a time with a steer card. Actions:
 
 - `[r]` read full synthesis (paged via `less`)
+- `[q]` view full question landscape with provenance (v5 only)
+- `[e]` view dead-end questions (v5 only)
 - `[d]` deeper — spawn a follow-up idea, archive the current one
 - `[k]` kill / archive
 - `[n]` add steer notes
@@ -85,18 +89,31 @@ Shows ready investigations one at a time with a steer card. Actions:
 msv review
 ```
 
+### `msv list [<filter>]`
+
+Lists ideas by status. Optional filter: `pending`, `investigating`, `ready`, `archived`.
+
+```bash
+msv list
+msv list ready
+```
+
 ## Storage layout
 
 Each idea is a directory under `~/.msv/`:
 
 ```
 ~/.msv/ideas/<uuid>/
-├── index.json                       # full investigation transcript (atomic writes)
+├── index.json                              # full investigation transcript (atomic writes)
 └── logs/
-    ├── discovery.jsonl              # raw API exchanges per stage
-    ├── coordinator-initial.jsonl
-    ├── coordinator-spawn.jsonl
-    ├── pair-<sq_id>.jsonl
+    ├── discovery.jsonl                     # raw API exchanges per stage
+    ├── coordinator.jsonl
+    ├── pair-<tid>-ideation.jsonl           # v5: per-territory sub-stage logs
+    ├── pair-<tid>-adversarial.jsonl
+    ├── pair-<tid>-alignment.jsonl
+    ├── pair-<tid>-researcher-<aqId>.jsonl  # v5: per-aligned-question researcher log
+    ├── pair-<tid>-observation.jsonl
+    ├── pair-<tid>-debate.jsonl
     ├── cross-pollination.jsonl
     ├── forum-contradictions.jsonl
     ├── synthesizer.jsonl
@@ -107,7 +124,7 @@ Archived ideas move to `~/.msv/archive/<uuid>/`. Debug raw transcripts with:
 
 ```bash
 cat ~/.msv/ideas/<id>/index.json | jq
-jq -s . ~/.msv/ideas/<id>/logs/pair-sq_002.jsonl
+jq -s . ~/.msv/ideas/<id>/logs/pair-t_001-debate.jsonl
 ```
 
 ## Tests
@@ -116,10 +133,17 @@ jq -s . ~/.msv/ideas/<id>/logs/pair-sq_002.jsonl
 CI=true npm test
 ```
 
-Tests cover the deterministic pieces (moves, diversity, forum aggregation rules, storage). LLM-driven stages are exercised by running real investigations against the API.
+Tests cover the deterministic pieces (moves, diversity, forum aggregation rules, working-group alignment, storage). LLM-driven stages are exercised by running real investigations against the API.
 
 ## Cost and runtime
 
-Per the spec: roughly 70k–100k tokens per run, $1–3 at current pricing. Wall time is dominated by parallel pair debates (30–60 seconds) plus ~5 seconds per other stage. Expect 1–3 minutes per run.
+**v5 pipeline** (current default):
+
+- Tokens: ~150k–250k per run (Sonnet 4.6 for all interpretive stages; Haiku 4.5 for synthesis)
+- Cost: ~$3–8 at current pricing
+- Wall time: ~3–6 minutes (parallel working groups dominate; each territory runs concurrently)
+- Researcher tool calls: up to 60 total across all working groups (10 tool-call budget per aligned question × up to 5 questions per territory)
+
+The higher cost versus v4 reflects the joint AI researcher sub-agent conducting real web research per aligned question, which is the core mechanism for producing evidence-grounded questions a single-agent pass would never surface.
 
 Concurrent invocations are not supported — no locking. Don't run two `msv run --all` instances in parallel.

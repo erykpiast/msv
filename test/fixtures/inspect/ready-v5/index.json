@@ -1,0 +1,97 @@
+{
+  "id": "v5-fixture",
+  "raw_capture": "test capture",
+  "status": "ready",
+  "parent_id": null,
+  "captured_at": "2026-05-16T00:00:00.000Z",
+  "last_action_at": "2026-05-16T00:30:00.000Z",
+  "investigation": {
+    "schema_version": "v5",
+    "model": "claude-sonnet-4-6",
+    "synthesizer_model": "claude-haiku-4-5-20251001",
+    "started_at": "2026-05-16T00:00:00.000Z",
+    "completed_at": "2026-05-16T00:05:00.000Z",
+    "budget": {
+      "used_executor_calls": 50,
+      "max_executor_calls": 180,
+      "used_total_tokens": 250000,
+      "max_total_tokens": 1500000,
+      "used_researcher_tool_calls": 12,
+      "max_researcher_tool_calls": 60
+    },
+    "perspective_discovery": {
+      "search_queries": ["q1"],
+      "candidate_personas": [
+        { "id": "skeptic", "name": "Skeptic", "tradition": "philosophy", "stance": "doubts everything" },
+        { "id": "builder", "name": "Builder", "tradition": "engineering", "stance": "ships fast" }
+      ],
+      "selected_persona_ids": ["skeptic", "builder"],
+      "fixed_personas": ["skeptic", "builder"],
+      "selection_distinctness": {}
+    },
+    "coordinator_decisions": {
+      "initial": {
+        "decided_at": "2026-05-16T00:01:00.000Z",
+        "territories": [
+          {
+            "id": "t_001",
+            "territory_id": "t_001",
+            "name": "first-territory",
+            "description": "First test territory.",
+            "rationale": "Test rationale.",
+            "assigned_pair": ["skeptic", "builder"],
+            "pair_distinctness_score": 0.9
+          }
+        ]
+      }
+    },
+    "pair_debates": [
+      {
+        "territory_id": "t_001",
+        "candidate_questions": [
+          { "candidate_id": "cq_t_001_001", "by_persona_id": "skeptic", "predicted_confidence": 6, "question": "What about X?" }
+        ],
+        "adversarial_marks": [],
+        "aligned_questions": [
+          { "aligned_id": "aq_cq_t_001_001_001", "question": "What about X?", "origin": "aligned", "by_persona_id": "skeptic", "source_candidate_ids": ["cq_t_001_001"] }
+        ],
+        "researcher_reports": [
+          { "report_id": "rr_001", "aligned_id": "aq_cq_t_001_001_001", "outcome": "useful", "findings": [{ "finding_id": "f_aq_cq_t_001_001_001_01", "content": "F1" }], "search_trace": ["s1"] }
+        ],
+        "observations": [
+          { "observation_id": "o_t_001_001", "by_persona_id": "skeptic", "report_id": "rr_001", "content": "Observation 1", "cited_finding_ids": ["f_aq_cq_t_001_001_001_01"] }
+        ],
+        "moves": [
+          { "move_id": "m_t_001_debate_0001", "by_persona_id": "skeptic", "type": "Claim", "content": "Claim 1", "evidence_basis": "obs+finding", "confidence": 7, "references_move_id": null, "evidence_refs": [{ "observation_id": "o_t_001_001" }, { "finding_id": "f_aq_cq_t_001_001_001_01" }] }
+        ],
+        "surviving_claims": [
+          { "claim_id": "c_m_t_001_debate_0001", "originating_move_id": "m_t_001_debate_0001", "content": "Claim 1", "confidence_after_debate": 7 }
+        ],
+        "terminated_by": "mutual_concession"
+      }
+    ],
+    "cross_pollination": [],
+    "forum": {
+      "constructed_at": "2026-05-16T00:04:00.000Z",
+      "nodes": [
+        { "node_id": "n_001", "claim_id": "c_m_t_001_debate_0001", "working_group_id": "t_001", "content": "Claim 1", "aggregate_confidence": 7, "contradiction_with_node_id": null, "has_open_question": false, "reactions": [], "survival_rank": 1 }
+      ],
+      "dead_end_questions": []
+    },
+    "synthesis": {
+      "produced_at": "2026-05-16T00:05:00.000Z",
+      "report": "Synthesis report.",
+      "headline_findings": ["Finding 1"],
+      "open_tensions": [],
+      "question_landscape": [
+        {
+          "territory_id": "t_001",
+          "territory_name": "first-territory",
+          "questions": [{ "question": "What about X?", "origin": "aligned" }]
+        }
+      ],
+      "dead_end_summary": ""
+    }
+  },
+  "user_reactions": { "steer_notes": [], "follow_up_topic": null }
+}

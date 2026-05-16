@@ -51,22 +51,68 @@ function attachReactions(claimToNode, crossPollination) {
 function buildBaseNodes(pairDebates) {
   const claimToNode = new Map();
   for (const debate of pairDebates) {
+    // Support both v4 (sub_question_id) and v5 (territory_id).
+    const groupId = debate.territory_id || debate.sub_question_id || 'unknown';
     for (const claim of debate.surviving_claims || []) {
       const node = {
         node_id: `n_${String(claimToNode.size + 1).padStart(3, '0')}`,
         claim_id: claim.claim_id,
-        working_group_id: debate.sub_question_id,
+        working_group_id: groupId,
         content: claim.content,
         aggregate_confidence: Number(claim.confidence_after_debate) || 0,
         contradiction_with_node_id: null,
         has_open_question: false,
         reactions: [],
         survival_rank: null,
+        evidence_refs: claim.evidence_refs || [],
       };
       claimToNode.set(claim.claim_id, node);
     }
   }
   return claimToNode;
+}
+
+// Collect dead-end questions from researcher reports and pair aborts (v5 only).
+function buildDeadEndQuestions(pairDebates) {
+  const deadEnds = [];
+  for (const debate of pairDebates) {
+    if (!debate.territory_id) continue; // v4 pair — no dead-end processing
+
+    const territoryId = debate.territory_id;
+
+    // Pair-level abort propagates all aligned questions as dead ends.
+    if (
+      debate.terminated_by === 'ideation_failure' ||
+      debate.terminated_by === 'alignment_failure' ||
+      debate.terminated_by === 'all_dead_end'
+    ) {
+      for (const aq of debate.aligned_questions || []) {
+        deadEnds.push({
+          aligned_id: aq.aligned_id,
+          territory_id: territoryId,
+          originating_persona_id: aq.source_candidate_ids?.[0] || null,
+          outcome_summary: `Pair aborted with terminated_by="${debate.terminated_by}".`,
+        });
+      }
+      continue;
+    }
+
+    // Researcher-level dead ends.
+    for (const report of debate.researcher_reports || []) {
+      if (report.outcome === 'dead_end') {
+        const aq = (debate.aligned_questions || []).find(
+          (q) => q.aligned_id === report.aligned_id
+        );
+        deadEnds.push({
+          aligned_id: report.aligned_id,
+          territory_id: territoryId,
+          originating_persona_id: aq?.source_candidate_ids?.[0] || null,
+          outcome_summary: `Researcher returned outcome=dead_end after ${(report.search_trace || []).length} search traces; no usable findings.`,
+        });
+      }
+    }
+  }
+  return deadEnds;
 }
 
 function contradictionKey(a, b) {
@@ -156,9 +202,12 @@ async function aggregateForum({ client, idea, model, budget, pairDebates, crossP
     node.survival_rank = index + 1;
   });
 
+  const deadEndQuestions = buildDeadEndQuestions(pairDebates);
+
   return {
     constructed_at: new Date().toISOString(),
     nodes,
+    dead_end_questions: deadEndQuestions,
   };
 }
 
@@ -166,5 +215,6 @@ module.exports = {
   aggregateForum,
   applyReactionEffect,
   buildBaseNodes,
+  buildDeadEndQuestions,
   contradictionKey,
 };
