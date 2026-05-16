@@ -1,5 +1,7 @@
 # `msv` — Multi-Agent Idea Research Pipeline (CLI Prototype)
 
+> **Note:** This document describes the v4 architecture. The current implementation has been rebuilt as a v5 "question-generation machine" — see `specs/question-machine.md` for the live schema, pipeline, and sub-stages. A full rewrite of this prototype.md to reflect v5 is pending.
+
 **Status:** Spec for a validation prototype, not a production tool.\
 **Author target:** A single developer building it for themself.\
 **Goal:** Validate whether a society of LLM agents — discovering perspectives, debating in working groups, cross-pollinating, and converging in a forum — produces substantively better idea research than a single agent or a turn-based conversation could. The hypothesis being tested is that *structured disagreement between deliberately diverse personas, with confidence-weighted aggregation, leaves the user meaningfully further along in understanding an idea's landscape than they were before*.

@@ -1,8 +1,14 @@
 const Anthropic = require('@anthropic-ai/sdk');
+const apiQueue = require('./api_queue');
+const { MODEL, SYNTHESIZER_MODEL } = require('./models');
 
-const DEFAULT_MODEL = 'claude-sonnet-4-6';
-const DEFAULT_MAX_RETRIES = 3;
-const RETRY_BACKOFF_MS = 1000;
+// Explicit per-request timeout for the SDK. The SDK default is 10 minutes,
+// which lets a single stalled call wedge the working-groups Promise.allSettled
+// for ages (observed in production: one orphaned promise pinned the pipeline
+// for 15+ minutes with 0% CPU and zero open sockets). 60s comfortably covers
+// real model latency including web_search; anything longer is almost certainly
+// a hang the queue-level watchdog should then surface.
+const SDK_REQUEST_TIMEOUT_MS = 60_000;
 
 function createClient() {
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -10,30 +16,13 @@ function createClient() {
     throw new Error('ANTHROPIC_API_KEY is required');
   }
   const Ctor = Anthropic.default || Anthropic;
-  return new Ctor({ apiKey });
+  return new Ctor({ apiKey, maxRetries: 0, timeout: SDK_REQUEST_TIMEOUT_MS });
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function withRetries(fn, { retries = DEFAULT_MAX_RETRIES } = {}) {
-  let lastError;
-  for (let attempt = 1; attempt <= retries; attempt += 1) {
-    try {
-      return await fn();
-    } catch (error) {
-      lastError = error;
-      const status = error?.status || error?.response?.status;
-      const retryable = !status || status === 429 || (status >= 500 && status < 600);
-      if (!retryable || attempt === retries) {
-        break;
-      }
-      const wait = RETRY_BACKOFF_MS * 2 ** (attempt - 1);
-      await sleep(wait);
-    }
-  }
-  throw lastError;
+// withRetries kept for backward compat during v4 → v5 transition; new code
+// routes through apiQueue.enqueue() instead.
+async function withRetries(fn) {
+  return apiQueue.enqueue(fn);
 }
 
 function webSearchTool({ maxUses = 3 } = {}) {
@@ -96,7 +85,7 @@ async function runStructuredCall({
   messages,
   tools = [],
   forceTool,
-  model = DEFAULT_MODEL,
+  model = MODEL,
   maxTokens = 2400,
   budget,
 }) {
@@ -116,7 +105,7 @@ async function runStructuredCall({
     params.tool_choice = { type: 'tool', name: forceTool };
   }
 
-  const response = await withRetries(() => client.messages.create(params));
+  const response = await apiQueue.enqueue(() => client.messages.create(params));
   const usage = tokenUsage(response);
   if (budget) {
     budget.used_executor_calls = (budget.used_executor_calls || 0) + 1;
@@ -138,13 +127,24 @@ async function runStructuredCall({
   return { response, usage, web_searches };
 }
 
+function webFetchTool({ maxUses = 6 } = {}) {
+  return {
+    type: 'web_fetch_20250910',
+    name: 'web_fetch',
+    max_uses: maxUses,
+  };
+}
+
 module.exports = {
-  DEFAULT_MODEL,
+  MODEL,
+  SYNTHESIZER_MODEL,
   createClient,
   withRetries,
   webSearchTool,
+  webFetchTool,
   extractToolUse,
   extractWebSearches,
   tokenUsage,
   runStructuredCall,
+  getStats: apiQueue.getStats,
 };

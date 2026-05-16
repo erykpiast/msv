@@ -8,18 +8,17 @@ const {
   writeIdea,
   freshInvestigation,
 } = require('../storage');
-const { createClient, DEFAULT_MODEL } = require('../anthropic');
+const { createClient, getStats } = require('../anthropic');
+const { MODEL, SYNTHESIZER_MODEL } = require('../models');
 const {
   FIXED_PERSONAS,
   selectDiversePersonas,
   selectReactorPermutation,
 } = require('../diversity');
 const { runPerspectiveDiscovery } = require('../agents/discovery');
-const {
-  runCoordinatorInitial,
-  runCoordinatorSpawn,
-} = require('../agents/coordinator');
-const { runPairDebate, runCrossPollinationReaction } = require('../agents/persona');
+const { runCoordinatorInitial } = require('../agents/coordinator');
+const { runCrossPollinationReaction } = require('../agents/persona');
+const { runWorkingGroup } = require('../working_group');
 const { aggregateForum } = require('../forum');
 const { runSynthesizer } = require('../agents/synthesizer');
 
@@ -35,6 +34,22 @@ function parseRunSelection(args) {
 
 function progress(line) {
   process.stdout.write(`${line}\n`);
+}
+
+// Print "...still working (Ns)" every HEARTBEAT_MS while fn is in flight so
+// long stages (web_search, model calls) don't look stuck.
+const HEARTBEAT_MS = 15000;
+async function withHeartbeat(label, fn) {
+  const start = Date.now();
+  const timer = setInterval(() => {
+    const seconds = Math.round((Date.now() - start) / 1000);
+    process.stdout.write(`→      [${label}] …still working (${seconds}s)\n`);
+  }, HEARTBEAT_MS);
+  try {
+    return await fn();
+  } finally {
+    clearInterval(timer);
+  }
 }
 
 async function ensureConfirmation(idea) {
@@ -57,45 +72,43 @@ function resetInvestigation(idea) {
   return idea;
 }
 
-// Run pair debates concurrently and degrade gracefully: a single pair throwing
-// (rate-limit, unrecoverable parse failure) does not discard the work of the
-// other pairs. The spec requires the synthesizer to run even on partial input.
-async function runDebatesConcurrently({
-  client,
-  idea,
-  inv,
-  personas,
-  subQuestions,
-  labelPrefix,
-}) {
+// Run working groups concurrently; degrade gracefully per territory.
+async function runWorkingGroupsConcurrently({ client, idea, inv, personas, territories }) {
   const settled = await Promise.allSettled(
-    subQuestions.map((sq) => {
-      const pairPersonas = sq.assigned_pair
-        .map((pid) => personas.find((p) => p.id === pid))
-        .filter(Boolean);
-      return runPairDebate({
+    territories.map((territory) =>
+      runWorkingGroup({
         client,
         idea,
         model: inv.model,
+        synthesizerModel: inv.synthesizer_model,
         budget: inv.budget,
-        subQuestion: sq,
-        personas: pairPersonas,
-      });
-    })
+        territory,
+        personas,
+        onProgress: (msg) => progress(`→      ${msg}`),
+      })
+    )
   );
 
   const succeeded = [];
   settled.forEach((result, index) => {
-    const sq = subQuestions[index];
+    const territory = territories[index];
+    const name = territory.name || territory.id || territory.territory_id;
     if (result.status === 'fulfilled') {
-      succeeded.push(result.value);
-      const debate = result.value;
-      progress(
-        `→      ${labelPrefix} ${index + 1} (${debate.sub_question_id}): ${debate.moves.length} moves, ${debate.surviving_claims.length} surviving claims (${debate.terminated_by})`
-      );
+      const wg = result.value;
+      succeeded.push(wg);
+      const subStagesSummary = [
+        `${wg.candidate_questions.length} candidates`,
+        `${wg.aligned_questions.length} aligned`,
+        `${wg.researcher_reports.length} reports`,
+        `${wg.observations.length} observations`,
+        `${wg.moves.filter((m) => m.stage === 'debate').length} debate moves`,
+        `${wg.surviving_claims.length} claims`,
+        `(${wg.terminated_by})`,
+      ].join(', ');
+      progress(`→      [${name}] ${subStagesSummary}`);
     } else {
       const reason = result.reason?.message || String(result.reason);
-      progress(`→      ${labelPrefix} ${index + 1} (${sq.id}) failed: ${reason}`);
+      progress(`→      [${name}] failed: ${reason}`);
     }
   });
   return succeeded;
@@ -110,19 +123,23 @@ async function runPipeline(idea, client) {
   const inv = idea.investigation;
   inv.started_at = new Date().toISOString();
   inv.completed_at = null;
-  inv.model = DEFAULT_MODEL;
+  inv.model = MODEL;
+  inv.synthesizer_model = SYNTHESIZER_MODEL;
   await ensureIdeaDirs(idea.id);
   await writeIdea(idea);
 
   const id = idea.id;
 
-  progress(`→ ${id} [1/7] perspective discovery…`);
-  const discovery = await runPerspectiveDiscovery({
-    client,
-    idea,
-    model: inv.model,
-    budget: inv.budget,
-  });
+  progress(`→ ${id} [1/7] perspective discovery (interrogative posture)…`);
+  const discovery = await withHeartbeat('discovery', () =>
+    runPerspectiveDiscovery({
+      client,
+      idea,
+      model: inv.model,
+      budget: inv.budget,
+      onProgress: (msg) => progress(`→      ${msg}`),
+    })
+  );
   inv.perspective_discovery.search_queries = discovery.search_queries;
   inv.perspective_discovery.candidate_personas = discovery.candidate_personas;
   progress(
@@ -138,101 +155,74 @@ async function runPipeline(idea, client) {
   inv.perspective_discovery.selected_persona_ids = selectedDiscovered.map((p) => p.id);
   const personas = [...selectedDiscovered, ...FIXED_PERSONAS];
   progress(
-    `→      selected ${selectedDiscovered.length} discovered personas (+ ${FIXED_PERSONAS.length} fixed)`
+    `→      selected ${selectedDiscovered.length} personas (+ ${FIXED_PERSONAS.map((p) => p.role || p.id).join(', ')})`
   );
   await writeIdea(idea);
 
-  progress(`→ ${id} [3/7] coordinator decomposing topic…`);
-  const initialDecomposition = await runCoordinatorInitial({
-    client,
-    idea,
-    model: inv.model,
-    budget: inv.budget,
-    personas,
-  });
+  progress(`→ ${id} [3/7] coordinator decomposing into territories…`);
+  const initialDecomposition = await withHeartbeat('coordinator', () =>
+    runCoordinatorInitial({
+      client,
+      idea,
+      model: inv.model,
+      budget: inv.budget,
+      personas,
+    })
+  );
+  const territories = initialDecomposition.territories || initialDecomposition.sub_questions || [];
   inv.coordinator_decisions.initial = {
     decided_at: initialDecomposition.decided_at,
-    sub_questions: initialDecomposition.sub_questions,
+    territories,
   };
-  progress(`→      ${initialDecomposition.sub_questions.length} sub-questions, paired`);
+  const territoryNames = territories.map((t) => t.name || t.id || t.territory_id).join(', ');
+  progress(`→      ${territories.length} territories: ${territoryNames}`);
   await writeIdea(idea);
 
   progress(
-    `→ ${id} [4/7] working groups (${initialDecomposition.sub_questions.length} parallel pair debates)…`
+    `→ ${id} [4/7] working groups (${territories.length} parallel pairs · six sub-stages each)…`
   );
-  const initialDebates = await runDebatesConcurrently({
-    client,
-    idea,
-    inv,
-    personas,
-    subQuestions: initialDecomposition.sub_questions,
-    labelPrefix: 'pair',
-  });
-  inv.pair_debates.push(...initialDebates);
-  await writeIdea(idea);
-
-  const spawnDecision = await runCoordinatorSpawn({
-    client,
-    idea,
-    model: inv.model,
-    budget: inv.budget,
-    personas,
-    pairDebates: inv.pair_debates,
-    existingSubQuestions: initialDecomposition.sub_questions,
-  });
-  inv.coordinator_decisions.spawn = spawnDecision;
-  await writeIdea(idea);
-
-  if (spawnDecision.sub_questions.length > 0) {
-    progress(
-      `→ ${id} [4b/7] coordinator spawned ${spawnDecision.sub_questions.length} additional sub-question(s)…`
-    );
-    const spawnedDebates = await runDebatesConcurrently({
+  const workingGroups = await withHeartbeat('working-groups', () =>
+    runWorkingGroupsConcurrently({
       client,
       idea,
       inv,
       personas,
-      subQuestions: spawnDecision.sub_questions,
-      labelPrefix: 'spawn-pair',
-    });
-    inv.pair_debates.push(...spawnedDebates);
-    await writeIdea(idea);
-  }
+      territories,
+    })
+  );
+  inv.pair_debates.push(...workingGroups);
+  await writeIdea(idea);
 
   progress(`→ ${id} [5/7] cross-pollination round…`);
-  const allSubQuestions = [
-    ...initialDecomposition.sub_questions,
-    ...spawnDecision.sub_questions,
-  ];
-  const debatesById = new Map(inv.pair_debates.map((d) => [d.sub_question_id, d]));
-  // Only sub-questions whose debate actually succeeded contribute to cross-pollination.
-  const livePairs = allSubQuestions
-    .filter((sq) => debatesById.has(sq.id))
-    .map((sq) => ({
-      sub_question_id: sq.id,
-      assigned_pair: sq.assigned_pair,
-      subQuestion: sq,
+  const livePairs = workingGroups
+    .filter((wg) => wg.terminated_by !== 'ideation_failure' && wg.surviving_claims.length > 0)
+    .map((wg) => ({
+      territory_id: wg.territory_id,
+      assigned_pair: territories.find((t) => (t.id || t.territory_id) === wg.territory_id)?.assigned_pair || [],
+      workingGroup: wg,
     }));
 
   let reactionTotal = 0;
   if (livePairs.length >= 2) {
     const assignment = selectReactorPermutation(livePairs, personas);
 
-    // Each pair's reactions are independent; fan out across pairs and across the
-    // two personas inside each reactor pair. This collapses what was ~N sequential
-    // batches down to one round-trip.
-    const perPairReactions = await Promise.all(
+    const perPairReactions = await withHeartbeat('cross-pollination', () =>
+      Promise.all(
       livePairs.map(async (targetPair, i) => {
         const reactorIdx = assignment[i];
         if (reactorIdx == null || reactorIdx < 0) return [];
         const reactorPair = livePairs[reactorIdx];
-        const targetDebate = debatesById.get(targetPair.sub_question_id);
-        const targetClaims = targetDebate?.surviving_claims || [];
+        const targetClaims = targetPair.workingGroup.surviving_claims || [];
         if (targetClaims.length === 0) return [];
 
         const reactorPersonas = reactorPair.assigned_pair
           .map((pid) => personas.find((p) => p.id === pid))
           .filter(Boolean);
+
+        const targetAlignedQuestions = targetPair.workingGroup.aligned_questions || [];
+        const targetFindings = (targetPair.workingGroup.researcher_reports || []).flatMap(
+          (r) => r.findings
+        );
 
         return Promise.all(
           reactorPersonas.map((persona) =>
@@ -244,17 +234,22 @@ async function runPipeline(idea, client) {
               persona,
               reactingPair: reactorPair,
               targetClaims,
-              targetSubQuestion: targetPair.subQuestion,
+              targetAlignedQuestions,
+              targetFindings,
+              targetTerritory: targetPair.workingGroup.territory_id,
             })
           )
         );
       })
+      )
     );
 
     const claimMap = new Map();
     for (const batch of perPairReactions) {
       for (const reaction of batch) {
+        if (!reaction) continue;
         const claimId = reaction.references_claim_id;
+        if (!claimId) continue;
         if (!claimMap.has(claimId)) {
           claimMap.set(claimId, { claim_id: claimId, reactions: [] });
         }
@@ -284,40 +279,52 @@ async function runPipeline(idea, client) {
   }
 
   progress(`→ ${id} [6/7] forum aggregation…`);
-  const forum = await aggregateForum({
-    client,
-    idea,
-    model: inv.model,
-    budget: inv.budget,
-    pairDebates: inv.pair_debates,
-    crossPollination: inv.cross_pollination,
-  });
+  const forum = await withHeartbeat('forum', () =>
+    aggregateForum({
+      client,
+      idea,
+      model: inv.model,
+      budget: inv.budget,
+      pairDebates: inv.pair_debates,
+      crossPollination: inv.cross_pollination,
+    })
+  );
   inv.forum = forum;
   const contradictionCount = forum.nodes.filter((n) => n.contradiction_with_node_id).length;
-  progress(`→      ${forum.nodes.length} nodes, ${contradictionCount} contradictions surfaced`);
+  const deadEndCount = (forum.dead_end_questions || []).length;
+  progress(
+    `→      ${forum.nodes.length} nodes, ${contradictionCount} contradictions surfaced, ${deadEndCount} dead-end questions preserved`
+  );
   await writeIdea(idea);
 
-  progress(`→ ${id} [7/7] synthesis…`);
-  const synthesis = await runSynthesizer({
-    client,
-    idea,
-    model: inv.model,
-    budget: inv.budget,
-    forum,
-    personas,
-  });
+  progress(`→ ${id} [7/7] synthesis (haiku)…`);
+  const synthesis = await withHeartbeat('synthesis', () =>
+    runSynthesizer({
+      client,
+      idea,
+      model: inv.synthesizer_model,
+      budget: inv.budget,
+      forum,
+      personas,
+      pairDebates: inv.pair_debates,
+    })
+  );
   inv.synthesis = {
     produced_at: synthesis.produced_at,
     report: synthesis.report,
     headline_findings: synthesis.headline_findings,
     open_tensions: synthesis.open_tensions,
+    question_landscape: synthesis.question_landscape || null,
+    dead_end_summary: synthesis.dead_end_summary || null,
   };
   inv.completed_at = new Date().toISOString();
   idea.status = 'ready';
   await writeIdea(idea);
 
+  const queueStats = typeof getStats === 'function' ? getStats() : null;
+  const queueInfo = queueStats ? ` (queue: ${queueStats.retried} retries)` : '';
   progress(
-    `✓ ${id} ready  (used ${inv.budget.used_executor_calls}/${inv.budget.max_executor_calls} executor calls, ${inv.budget.used_total_tokens}/${inv.budget.max_total_tokens} tokens)`
+    `✓ ${id} ready  (used ${inv.budget.used_executor_calls}/${inv.budget.max_executor_calls} executor calls, ${inv.budget.used_total_tokens}/${inv.budget.max_total_tokens} tokens${queueInfo})`
   );
 
   return { ok: true };

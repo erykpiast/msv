@@ -1,7 +1,12 @@
 const MOVE_TYPES = ['Claim', 'Support', 'Rebut', 'Question', 'Concede'];
 const REACTION_MOVE_TYPES = ['Rebut', 'Question', 'Concede'];
+const ALIGNMENT_MOVE_TYPES = ['Propose', 'Sharpen', 'Merge', 'Drop', 'Defer'];
 
 const PAIR_MOVE_BUDGET = 12;
+const ALIGNMENT_MOVE_BUDGET = 8;
+const MAX_ALIGNED_QUESTIONS = 5;
+const RESEARCHER_TOOL_BUDGET = 10;
+const RESEARCHER_TURN_BUDGET = 6;
 const CONCESSION_FLOOR = 4;
 const CALCIFICATION_REBUT_THRESHOLD = 8;
 const CALCIFICATION_UNADDRESSED_TURNS = 2;
@@ -39,6 +44,18 @@ const MOVE_JSON_SCHEMA = {
       description:
         'The move_id of a prior move this one responds to. Null for Claim. Required for Support/Rebut/Question/Concede.',
     },
+    evidence_refs: {
+      type: 'array',
+      description:
+        'Required on Claims in stage:debate. Each entry is {observation_id} or {finding_id}.',
+      items: {
+        type: 'object',
+        properties: {
+          observation_id: { type: 'string' },
+          finding_id: { type: 'string' },
+        },
+      },
+    },
   },
 };
 
@@ -73,9 +90,95 @@ const REACTION_JSON_SCHEMA = {
   },
 };
 
+const IDEATION_JSON_SCHEMA = {
+  type: 'object',
+  required: ['question', 'predicted_answer', 'predicted_confidence', 'surface_area_rationale'],
+  additionalProperties: false,
+  properties: {
+    question: { type: 'string', minLength: 1 },
+    predicted_answer: { type: 'string', minLength: 1 },
+    predicted_confidence: { type: 'integer', minimum: 0, maximum: 10 },
+    surface_area_rationale: { type: 'string', minLength: 1 },
+  },
+};
+
+const ADVERSARIAL_MARK_JSON_SCHEMA = {
+  type: 'object',
+  required: ['candidate_id', 'could_answer_from_priors'],
+  additionalProperties: false,
+  properties: {
+    candidate_id: { type: 'string', minLength: 1 },
+    could_answer_from_priors: { type: 'boolean' },
+    predicted_answer: { type: 'string' },
+  },
+};
+
+const ALIGNMENT_JSON_SCHEMA = {
+  type: 'object',
+  required: ['type', 'content'],
+  additionalProperties: false,
+  properties: {
+    type: { type: 'string', enum: ALIGNMENT_MOVE_TYPES },
+    content: { type: 'string', minLength: 1 },
+    candidate_id: { type: 'string' },
+    merged_candidate_ids: { type: 'array', items: { type: 'string' } },
+    rationale: { type: 'string' },
+    // Structured termination signal — set true on the move that should conclude
+    // the alignment debate. Replaces the earlier brittle "[done]" substring check
+    // on prose content (which mis-fired when a persona legitimately wrote "[done]").
+    is_final: { type: 'boolean' },
+  },
+};
+
+const OBSERVATION_JSON_SCHEMA = {
+  type: 'object',
+  required: ['content', 'cited_finding_ids'],
+  additionalProperties: false,
+  properties: {
+    content: { type: 'string', minLength: 1 },
+    cited_finding_ids: {
+      type: 'array',
+      minItems: 1,
+      items: { type: 'string' },
+    },
+  },
+};
+
+const RESEARCHER_REPORT_JSON_SCHEMA = {
+  type: 'object',
+  required: ['outcome', 'findings', 'search_trace'],
+  properties: {
+    outcome: { type: 'string', enum: ['useful', 'partial', 'dead_end'] },
+    findings: {
+      type: 'array',
+      minItems: 0,
+      items: {
+        type: 'object',
+        required: ['summary', 'source_url', 'source_quote', 'confidence_in_source'],
+        properties: {
+          summary: { type: 'string', minLength: 1 },
+          source_url: { type: 'string' },
+          source_quote: { type: 'string', minLength: 1 },
+          confidence_in_source: { type: 'integer', minimum: 0, maximum: 10 },
+        },
+      },
+    },
+    search_trace: { type: 'array', items: { type: 'string' } },
+  },
+};
+
 function moveId(subQuestionId, sequence) {
   const padded = String(sequence).padStart(4, '0');
   return `m_${subQuestionId}_${padded}`;
+}
+
+// v5 move IDs distinguish alignment vs debate stages.
+function debateMoveId(territoryId, sequence) {
+  return `m_${territoryId}_debate_${String(sequence).padStart(4, '0')}`;
+}
+
+function alignmentMoveId(territoryId, sequence) {
+  return `m_${territoryId}_alignment_${String(sequence).padStart(4, '0')}`;
 }
 
 function isClaimMove(move) {
@@ -230,6 +333,43 @@ function extractSurvivingClaims(moves) {
   return surviving;
 }
 
+/**
+ * Validate a v5 debate Claim: must carry ≥1 observation_id AND ≥1 finding_id,
+ * all resolving to actual entries in the pair's scope.
+ *
+ * @param {object} move - The move object.
+ * @param {{ observations: object[], findings: object[] }} scope - Available IDs.
+ */
+function validateDebateMove(move, { observations = [], findings = [] } = {}) {
+  const base = validateMoveShape(move);
+  if (!base.valid) return base;
+
+  if (move.type !== 'Claim') return { valid: true, errors: [] };
+
+  const refs = Array.isArray(move.evidence_refs) ? move.evidence_refs : [];
+  const errors = [];
+
+  const obsIds = new Set(observations.map((o) => o.observation_id));
+  const findingIds = new Set(findings.map((f) => f.finding_id));
+
+  const hasObs = refs.some((r) => r.observation_id && obsIds.has(r.observation_id));
+  const hasFinding = refs.some((r) => r.finding_id && findingIds.has(r.finding_id));
+
+  if (!hasObs) errors.push('Claim must cite at least one observation_id from this pair');
+  if (!hasFinding) errors.push('Claim must cite at least one finding_id from this pair');
+
+  for (const ref of refs) {
+    if (ref.observation_id && !obsIds.has(ref.observation_id)) {
+      errors.push(`observation_id ${ref.observation_id} not found in pair scope`);
+    }
+    if (ref.finding_id && !findingIds.has(ref.finding_id)) {
+      errors.push(`finding_id ${ref.finding_id} not found in pair scope`);
+    }
+  }
+
+  return { valid: errors.length === 0, errors };
+}
+
 function detectConcessionTermination(moves) {
   if (moves.length < CONCESSION_FLOOR) {
     return false;
@@ -253,15 +393,28 @@ function detectConcessionTermination(moves) {
 module.exports = {
   MOVE_TYPES,
   REACTION_MOVE_TYPES,
+  ALIGNMENT_MOVE_TYPES,
   PAIR_MOVE_BUDGET,
+  ALIGNMENT_MOVE_BUDGET,
+  MAX_ALIGNED_QUESTIONS,
+  RESEARCHER_TOOL_BUDGET,
+  RESEARCHER_TURN_BUDGET,
   CONCESSION_FLOOR,
   CALCIFICATION_REBUT_THRESHOLD,
   CALCIFICATION_UNADDRESSED_TURNS,
   MOVE_JSON_SCHEMA,
   REACTION_JSON_SCHEMA,
+  IDEATION_JSON_SCHEMA,
+  ADVERSARIAL_MARK_JSON_SCHEMA,
+  ALIGNMENT_JSON_SCHEMA,
+  OBSERVATION_JSON_SCHEMA,
+  RESEARCHER_REPORT_JSON_SCHEMA,
   moveId,
+  debateMoveId,
+  alignmentMoveId,
   validateMoveShape,
   validateMoveList,
+  validateDebateMove,
   findMoveById,
   checkCalcification,
   classifyClaimConcession,

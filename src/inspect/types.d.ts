@@ -18,6 +18,95 @@ export type SubQ = {
   pair_distinctness_score?: number;
 };
 
+// --- v5 types ---
+
+export type Territory = {
+  id: string;
+  territory_id: string;
+  name: string;
+  description: string;
+  rationale?: string;
+  assigned_pair: [string, string];
+  pair_distinctness_score?: number;
+};
+
+export type CandidateQuestion = {
+  candidate_id: string;
+  by_persona_id: string;
+  predicted_confidence: number;
+  question: string;
+  rationale?: string;
+};
+
+export type AdversarialMark = {
+  candidate_id: string;
+  marker_persona_id: string;
+  could_answer_from_priors: boolean;
+  rationale?: string;
+};
+
+export type AlignedQuestion = {
+  aligned_id: string;
+  question: string;
+  origin: 'aligned' | string;
+  by_persona_id?: string;
+  source_candidate_ids: string[];
+};
+
+export type EvidenceRef = { observation_id: string } | { finding_id: string };
+
+export type Finding = {
+  finding_id: string;
+  content: string;
+  source_url?: string;
+  source_title?: string;
+  quality?: 'primary' | 'secondary' | 'indirect';
+};
+
+export type ResearcherReport = {
+  report_id: string;
+  aligned_id: string;
+  by_persona_id?: string;
+  outcome: 'useful' | 'partial' | 'dead_end';
+  findings: Finding[];
+  search_trace: string[];
+};
+
+export type Observation = {
+  observation_id: string;
+  by_persona_id: string;
+  report_id: string;
+  content: string;
+  cited_finding_ids: string[];
+};
+
+export type DeadEndQuestion = {
+  aligned_id: string;
+  territory_id: string;
+  originating_persona_id?: string;
+  outcome_summary: string;
+};
+
+export type QuestionLandscapeEntry = {
+  territory_id: string;
+  territory_name: string;
+  questions: Array<{ question: string; origin: string }>;
+};
+
+export type WorkingGroupView = {
+  territory: Territory | null;
+  pair: Persona[];
+  candidate_questions: CandidateQuestion[];
+  adversarial_marks: AdversarialMark[];
+  aligned_questions: AlignedQuestion[];
+  researcher_reports: ResearcherReport[];
+  observations: Observation[];
+  moves: Move[];
+  surviving_claims: SurvivingClaim[];
+  terminated_by: string | null;
+  confidence_trajectory: ConfidencePoint[];
+};
+
 export type MoveType = 'Claim' | 'Support' | 'Rebut' | 'Question' | 'Concede';
 
 export type Move = {
@@ -32,6 +121,8 @@ export type Move = {
   attempt?: number | null;
   synthesized?: boolean;
   usage?: TokenUsage | null;
+  // v5 only — observation and finding citations for Claims
+  evidence_refs?: EvidenceRef[];
 };
 
 export type TokenUsage = {
@@ -129,6 +220,9 @@ export type Budget = {
   max_executor_calls: number;
   used_total_tokens: number;
   max_total_tokens: number;
+  // v5 only
+  used_researcher_tool_calls?: number;
+  max_researcher_tool_calls?: number;
   runtime_ms: number | null;
 };
 
@@ -151,6 +245,8 @@ export type CoordinatorView = {
     reason: string | null;
     declined: boolean;
   } | null;
+  // v5 only — territories replace sub_questions
+  territories: Territory[];
 };
 
 export type ConfidencePoint = {
@@ -186,6 +282,9 @@ export type SynthesisView = {
   report: string;
   headline_findings: string[];
   open_tensions: string[];
+  // v5 only
+  question_landscape?: QuestionLandscapeEntry[];
+  dead_end_summary?: string;
 } | null;
 
 export type PersonaInteractionCell = {
@@ -209,6 +308,10 @@ export type ParseErrorEntry = {
   ts: string | null;
 };
 
+export type ForumViewV5 = ForumView & {
+  dead_end_questions: DeadEndQuestion[];
+};
+
 export type InvestigationView = {
   id: string;
   raw_capture: string;
@@ -217,13 +320,17 @@ export type InvestigationView = {
   captured_at: string | null;
   last_action_at: string | null;
   model: string | null;
+  schema_version: 'v4' | 'v5';
   budget: Budget;
   stages: Stage[];
   discovery: DiscoveryView;
   coordinator: CoordinatorView;
+  // v4: keyed by sub_question_id; v5: empty (use working_groups instead)
   debates: Record<string, DebateView>;
+  // v5 only: keyed by territory_id; empty for v4
+  working_groups: Record<string, WorkingGroupView>;
   cross_pollination: CrossPollinationEntry[];
-  forum: ForumView;
+  forum: ForumView | ForumViewV5;
   synthesis: SynthesisView;
   persona_interactions: PersonaInteractions;
   parse_errors: ParseErrorEntry[];

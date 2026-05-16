@@ -2,7 +2,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const { v4: uuidv4 } = require('uuid');
-const { DEFAULT_MODEL } = require('./anthropic');
+const { MODEL, SYNTHESIZER_MODEL } = require('./models');
 
 const ROOT_DIR = process.env.MSV_ROOT
   ? path.resolve(process.env.MSV_ROOT)
@@ -11,10 +11,12 @@ const IDEAS_DIR = path.join(ROOT_DIR, 'ideas');
 const ARCHIVE_DIR = path.join(ROOT_DIR, 'archive');
 
 const DEFAULT_BUDGET = {
-  max_executor_calls: 60,
-  max_total_tokens: 500000,
+  max_executor_calls: 180,
+  max_total_tokens: 1_500_000,
+  max_researcher_tool_calls: 60,
   used_executor_calls: 0,
   used_total_tokens: 0,
+  used_researcher_tool_calls: 0,
 };
 
 async function ensureStorageDirs() {
@@ -46,8 +48,18 @@ function ideaLogsDir(id) {
   return path.join(ideaDir(id), 'logs');
 }
 
+// Constrain log-name segments to alphanumerics, underscore, hyphen.
+// Any other character (including path separators and dots) is collapsed to '_'.
+// Truncated to 96 chars to keep multi-segment composite names within filesystem limits.
+function safeSlug(s) {
+  return String(s ?? '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 96) || '_';
+}
+
 function ideaLogPath(id, name) {
-  return path.join(ideaLogsDir(id), `${name}.jsonl`);
+  const safe = safeSlug(name);
+  const resolved = path.resolve(ideaLogsDir(id), `${safe}.jsonl`);
+  assertWithinRoot(resolved, ideaLogsDir(id));
+  return resolved;
 }
 
 function archivedIdeaDir(id) {
@@ -90,9 +102,11 @@ async function readJsonFile(filePath) {
 
 function freshInvestigation() {
   return {
+    schema_version: 'v5',
     started_at: null,
     completed_at: null,
-    model: DEFAULT_MODEL,
+    model: MODEL,
+    synthesizer_model: SYNTHESIZER_MODEL,
     budget: { ...DEFAULT_BUDGET },
     perspective_discovery: {
       search_queries: [],
@@ -102,16 +116,50 @@ function freshInvestigation() {
     },
     coordinator_decisions: {
       initial: null,
-      spawn: null,
     },
     pair_debates: [],
     cross_pollination: [],
     forum: {
       constructed_at: null,
       nodes: [],
+      dead_end_questions: [],
     },
     synthesis: null,
   };
+}
+
+// Legacy ideas lack schema_version; tag them on load so downstream code can
+// branch without checking for the absent field.
+// Structural heuristic: if any pair_debate has territory_id, the idea was written
+// by the v5 pipeline (which uses territory_id), even if schema_version was lost
+// in a partial migration or hand-edit. Falls back to v4 only when no signal exists.
+function normalizeLoadedIdea(idea) {
+  const inv = idea?.investigation;
+  if (!inv || inv.schema_version) return idea;
+  const firstDebate = Array.isArray(inv.pair_debates) ? inv.pair_debates[0] : null;
+  const hasV5Marker =
+    firstDebate?.territory_id != null ||
+    Array.isArray(inv.coordinator_decisions?.initial?.territories);
+  inv.schema_version = hasV5Marker ? 'v5' : 'v4';
+  return idea;
+}
+
+// Strip ANSI / control characters from a string before persisting it to a log file.
+// Reason: researcher output may include web-fetched content with ANSI escape or OSC
+// sequences that hijack terminals when a developer `cat`s the JSONL file.
+// Applied recursively to any object before JSON.stringify.
+function stripControlChars(value) {
+  if (typeof value === 'string') {
+    // eslint-disable-next-line no-control-regex
+    return value.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, '');
+  }
+  if (Array.isArray(value)) return value.map(stripControlChars);
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const k of Object.keys(value)) out[k] = stripControlChars(value[k]);
+    return out;
+  }
+  return value;
 }
 
 function createIdea(rawCapture, extras = {}) {
@@ -142,7 +190,8 @@ async function writeIdea(idea) {
 }
 
 async function readIdea(id) {
-  return readJsonFile(ideaIndexPath(id));
+  const idea = await readJsonFile(ideaIndexPath(id));
+  return normalizeLoadedIdea(idea);
 }
 
 async function listIdeas() {
@@ -193,7 +242,7 @@ async function archiveIdea(id) {
 }
 
 async function appendLog(id, name, record) {
-  const entry = { ts: new Date().toISOString(), ...record };
+  const entry = stripControlChars({ ts: new Date().toISOString(), ...record });
   await fs.appendFile(ideaLogPath(id, name), `${JSON.stringify(entry)}\n`, 'utf8');
 }
 
@@ -216,6 +265,9 @@ module.exports = {
   atomicWriteText,
   readJsonFile,
   freshInvestigation,
+  normalizeLoadedIdea,
+  safeSlug,
+  stripControlChars,
   createIdea,
   writeIdea,
   readIdea,

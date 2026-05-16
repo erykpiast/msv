@@ -7,7 +7,7 @@ const {
   listIdeasByStatus,
   writeIdea,
 } = require('../storage');
-const { renderSteerCard, renderSynthesis } = require('../render');
+const { renderSteerCard, renderSynthesis, renderQuestionLandscape, renderDeadEnds } = require('../render');
 const { runInspectCommand } = require('./inspect');
 
 function clearScreen() {
@@ -79,6 +79,22 @@ async function steerLoop(rl, idea) {
       continue;
     }
 
+    if (action === 'q') {
+      const landscape = renderQuestionLandscape(idea);
+      await pageReport(landscape);
+      clearScreen();
+      process.stdout.write(`${renderSteerCard(idea)}\n`);
+      continue;
+    }
+
+    if (action === 'e') {
+      const deadEnds = renderDeadEnds(idea);
+      await pageReport(`DEAD ENDS\n\n${deadEnds}`);
+      clearScreen();
+      process.stdout.write(`${renderSteerCard(idea)}\n`);
+      continue;
+    }
+
     if (action === 'i') {
       process.stdout.write(`booting msv inspect ${idea.id} — Ctrl-C to return\n`);
       try {
@@ -108,7 +124,7 @@ async function steerLoop(rl, idea) {
       return { action: 'deeper', followUpId: followUp.id };
     }
 
-    process.stdout.write('unknown action. [r]ead [d]eeper [k]ill [n]otes [i]nspect\n');
+    process.stdout.write('unknown action. [r]ead  [q]uestions  [e]dead-ends  [d]eeper  [k]ill  [n]otes  [i]nspect\n');
   }
 }
 

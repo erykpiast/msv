@@ -1,3 +1,5 @@
+'use strict';
+
 const { runStructuredCall } = require('../anthropic');
 const { SYNTHESIZER } = require('./prompts');
 const { appendLog } = require('../storage');
@@ -5,7 +7,7 @@ const { appendLog } = require('../storage');
 const EMIT_SYNTHESIS_TOOL = {
   name: 'emit_synthesis',
   description:
-    'Emit the user-facing report along with headline_findings (3–5 items) and open_tensions (≤3 items).',
+    'Emit the user-facing report, headline_findings, open_tensions, question_landscape, and dead_end_summary.',
   input_schema: {
     type: 'object',
     required: ['headline_findings', 'open_tensions', 'report'],
@@ -25,8 +27,33 @@ const EMIT_SYNTHESIS_TOOL = {
       report: {
         type: 'string',
         minLength: 200,
-        description:
-          'Opinionated prose of roughly 800–1500 words. Structured paragraphs, not heavy bullet lists.',
+        description: 'Opinionated prose, ~800–1500 words.',
+      },
+      question_landscape: {
+        type: 'array',
+        description: 'Per-territory question landscape.',
+        items: {
+          type: 'object',
+          properties: {
+            territory_name: { type: 'string' },
+            territory_id: { type: 'string' },
+            questions: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  question: { type: 'string' },
+                  origin: { type: 'string' },
+                  provenance_note: { type: 'string' },
+                },
+              },
+            },
+          },
+        },
+      },
+      dead_end_summary: {
+        type: 'string',
+        description: '1–3 sentences about what was pursued and not found.',
       },
     },
   },
@@ -42,15 +69,7 @@ function renderForum(forum) {
         )
         .join('\n');
       return [
-        `${node.node_id} [rank ${node.survival_rank}] working_group=${node.working_group_id} agg_conf=${node.aggregate_confidence.toFixed(
-          2
-        )}${
-          node.has_open_question ? ' OPEN_QUESTION' : ''
-        }${
-          node.contradiction_with_node_id
-            ? ` contradicts=${node.contradiction_with_node_id}`
-            : ''
-        }`,
+        `${node.node_id} [rank ${node.survival_rank}] wg=${node.working_group_id} agg_conf=${node.aggregate_confidence.toFixed(2)}${node.has_open_question ? ' OPEN_QUESTION' : ''}${node.contradiction_with_node_id ? ` contradicts=${node.contradiction_with_node_id}` : ''}`,
         `  claim: ${node.content}`,
         reactions ? `  reactions:\n${reactions}` : '  reactions: (none)',
       ].join('\n');
@@ -64,14 +83,38 @@ function renderPersonas(personas) {
     .join('\n');
 }
 
-async function runSynthesizer({ client, idea, model, budget, forum, personas }) {
+function renderQuestionLandscape(pairDebates) {
+  if (!Array.isArray(pairDebates) || pairDebates.length === 0) return '(not available)';
+  return pairDebates
+    .filter((d) => d.territory_id && (d.aligned_questions || []).length > 0)
+    .map((d) => {
+      const qList = (d.aligned_questions || [])
+        .map((aq) => `  - [${aq.origin}] ${aq.question}`)
+        .join('\n');
+      return `Territory ${d.territory_id}:\n${qList}`;
+    })
+    .join('\n\n');
+}
+
+function renderDeadEnds(forum) {
+  const deadEnds = forum.dead_end_questions || [];
+  if (deadEnds.length === 0) return '(none)';
+  return deadEnds
+    .map((d) => `- [${d.territory_id}] aligned_id=${d.aligned_id}: ${d.outcome_summary}`)
+    .join('\n');
+}
+
+async function runSynthesizer({ client, idea, model, budget, forum, personas, pairDebates = [] }) {
   const forumDump = renderForum(forum);
   const personaDump = renderPersonas(personas);
+  const questionLandscape = renderQuestionLandscape(pairDebates);
+  const deadEnds = renderDeadEnds(forum);
 
   await appendLog(idea.id, 'synthesizer', {
     kind: 'request',
     payload: {
       node_count: forum.nodes?.length || 0,
+      dead_end_count: (forum.dead_end_questions || []).length,
       persona_count: personas.length,
     },
   });
@@ -81,11 +124,18 @@ async function runSynthesizer({ client, idea, model, budget, forum, personas }) 
     model,
     budget,
     system: SYNTHESIZER,
-    maxTokens: 4000,
+    maxTokens: 5000,
     messages: [
       {
         role: 'user',
-        content: `Original topic:\n${idea.raw_capture}\n\nPersona roster (for attribution context):\n${personaDump}\n\nForum (ranked nodes):\n${forumDump}\n\nProduce the final report. Invoke emit_synthesis.`,
+        content: [
+          `Original topic:\n${idea.raw_capture}`,
+          `\nPersona roster (for attribution):\n${personaDump}`,
+          `\nForum (ranked nodes):\n${forumDump}`,
+          `\nQuestion landscape (what each territory investigated):\n${questionLandscape}`,
+          `\nDead-end questions (research avenues with no useful findings):\n${deadEnds}`,
+          `\nProduce the final report. Invoke emit_synthesis.`,
+        ].join('\n'),
       },
     ],
     tools: [EMIT_SYNTHESIS_TOOL],
@@ -99,8 +149,8 @@ async function runSynthesizer({ client, idea, model, budget, forum, personas }) 
     payload: {
       stop_reason: response.stop_reason,
       usage,
-      headline_count: payload.headline_findings.length,
-      report_chars: payload.report.length,
+      headline_count: (payload.headline_findings || []).length,
+      report_chars: (payload.report || '').length,
     },
   });
 
@@ -109,6 +159,8 @@ async function runSynthesizer({ client, idea, model, budget, forum, personas }) 
     report: payload.report,
     headline_findings: payload.headline_findings,
     open_tensions: payload.open_tensions,
+    question_landscape: payload.question_landscape || null,
+    dead_end_summary: payload.dead_end_summary || null,
     usage,
   };
 }

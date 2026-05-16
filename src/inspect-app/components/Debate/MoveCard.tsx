@@ -67,6 +67,23 @@ export function MoveCard({
             </div>
           ) : null}
 
+          {move.evidence_refs && move.evidence_refs.length > 0 ? (
+            <Group gap="xs">
+              <Text size="xs" c="dimmed" fw={600} tt="uppercase">
+                Evidence refs
+              </Text>
+              {move.evidence_refs.map((ref, i) => {
+                const id = 'observation_id' in ref ? ref.observation_id : ref.finding_id;
+                const kind = 'observation_id' in ref ? 'obs' : 'finding';
+                return (
+                  <Code key={i} style={{ fontSize: 11 }}>
+                    {kind}:{id}
+                  </Code>
+                );
+              })}
+            </Group>
+          ) : null}
+
           {move.synthesized ? (
             <Alert color="yellow" variant="light" title="Calcification synthesis">
               This move was produced by the calcification validator after the debate showed signs
