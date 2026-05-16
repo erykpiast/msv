@@ -155,6 +155,155 @@ test('pipeline.failed sets failed flag and error info', () => {
   assert.equal(state.error.message, 'boom');
 });
 
+// --- currentStage tracking ---
+
+test('pipeline.stage.start sets currentStage to the named stage', () => {
+  const state = applyEvents([
+    mkEvent('pipeline.stage.start', { stage: 'discovery', stage_index: 1, total_stages: 7 }),
+  ]);
+  assert.equal(state.currentStage, 'discovery');
+});
+
+test('pipeline.stage.end clears currentStage back to null', () => {
+  const state = applyEvents([
+    mkEvent('pipeline.stage.start', { stage: 'discovery', stage_index: 1, total_stages: 7 }),
+    mkEvent('pipeline.stage.end', { stage: 'discovery', summary: {} }),
+  ]);
+  assert.equal(state.currentStage, null);
+});
+
+test('overlapping pipeline.stage.start events — the latter wins', () => {
+  // Stages aren't supposed to overlap, but the reducer should still hold a
+  // single coherent currentStage so downstream attribution stays well-defined.
+  const state = applyEvents([
+    mkEvent('pipeline.stage.start', { stage: 'discovery', stage_index: 1, total_stages: 7 }),
+    mkEvent('pipeline.stage.start', { stage: 'forum', stage_index: 6, total_stages: 7 }),
+  ]);
+  assert.equal(state.currentStage, 'forum');
+});
+
+// --- Per-stage token attribution ---
+
+test('api.call.end attributes tokens to the active stage', () => {
+  const state = applyEvents([
+    mkEvent('pipeline.stage.start', { stage: 'discovery', stage_index: 1, total_stages: 7 }),
+    mkEvent('api.call.start', { call_id: 1 }),
+    mkEvent('api.call.end', { call_id: 1, outcome: 'ok', input_tokens: 100, output_tokens: 50 }),
+  ]);
+  assert.equal(state.stages.discovery.tokens, 150);
+  assert.equal(state.api.totalTokens, 150);
+});
+
+test('multiple api.call.end events in the same stage accumulate tokens', () => {
+  const state = applyEvents([
+    mkEvent('pipeline.stage.start', { stage: 'discovery', stage_index: 1, total_stages: 7 }),
+    mkEvent('api.call.start', { call_id: 1 }),
+    mkEvent('api.call.end', { call_id: 1, outcome: 'ok', input_tokens: 100, output_tokens: 50 }),
+    mkEvent('api.call.start', { call_id: 2 }),
+    mkEvent('api.call.end', { call_id: 2, outcome: 'ok', input_tokens: 200, output_tokens: 75 }),
+  ]);
+  assert.equal(state.stages.discovery.tokens, 425);
+  assert.equal(state.api.totalTokens, 425);
+});
+
+test('api.call.end after pipeline.stage.end does NOT attribute to any stage', () => {
+  // Once a stage is closed, currentStage is null. The closed stage must
+  // freeze at its in-stage total; only api.totalTokens accumulates further.
+  const state = applyEvents([
+    mkEvent('pipeline.stage.start', { stage: 'discovery', stage_index: 1, total_stages: 7 }),
+    mkEvent('api.call.start', { call_id: 1 }),
+    mkEvent('api.call.end', { call_id: 1, outcome: 'ok', input_tokens: 100, output_tokens: 50 }),
+    mkEvent('pipeline.stage.end', { stage: 'discovery', summary: {} }),
+    // This api.call.end fires in between stages, with currentStage === null.
+    mkEvent('api.call.start', { call_id: 2 }),
+    mkEvent('api.call.end', { call_id: 2, outcome: 'ok', input_tokens: 80, output_tokens: 20 }),
+  ]);
+  assert.equal(state.currentStage, null);
+  // The closed stage stays frozen at 150 — the second call did not leak in.
+  assert.equal(state.stages.discovery.tokens, 150);
+  // The global counter accumulates regardless of currentStage.
+  assert.equal(state.api.totalTokens, 250);
+});
+
+test('api.totalTokens accumulates even with no active stage', () => {
+  const state = applyEvents([
+    // No pipeline.stage.start at all.
+    mkEvent('api.call.start', { call_id: 1 }),
+    mkEvent('api.call.end', { call_id: 1, outcome: 'ok', input_tokens: 100, output_tokens: 50 }),
+  ]);
+  assert.equal(state.currentStage, null);
+  assert.equal(state.api.totalTokens, 150);
+  assert.deepEqual(state.stages, {});
+});
+
+// --- wg.failed handling ---
+
+test('wg.failed flips non-done substages to failed and preserves done ones', () => {
+  const state = applyEvents([
+    mkEvent('wg.start', { territory_id: 't_001', territory_name: 'commercial' }),
+    // ideation completes successfully, so its 'done' status must be preserved.
+    mkEvent('wg.ideation.start', { territory_id: 't_001' }),
+    mkEvent('wg.ideation.done', { territory_id: 't_001', total_candidates: 8 }),
+    // researcher is running when the failure hits.
+    mkEvent('wg.researcher.start', { territory_id: 't_001', aligned_id: 'aq_001' }),
+    mkEvent('wg.failed', { territory_id: 't_001', reason: 'boom' }),
+  ]);
+  const wg = state.workingGroups['t_001'];
+  assert.equal(wg.failed, true);
+  assert.equal(wg.failReason, 'boom');
+  // Done before failure → stays done.
+  assert.equal(wg.substages.ideation, 'done');
+  // Running at the moment of failure → flipped to failed.
+  assert.equal(wg.substages.researcher, 'failed');
+  // Pending substages (not yet started) → flipped to failed so the card
+  // freezes in a visually-honest "this WG aborted" state.
+  assert.equal(wg.substages.adversarial, 'failed');
+  assert.equal(wg.substages.alignment, 'failed');
+  assert.equal(wg.substages.observation, 'failed');
+  assert.equal(wg.substages.debate, 'failed');
+});
+
+// --- wg.researcher.done substage flip ---
+
+test('wg.researcher.done does not flip substage to done until all researchers finish', () => {
+  // Start 3 researchers, complete 2 — substage must stay 'running'.
+  const partial = applyEvents([
+    mkEvent('wg.start', { territory_id: 't_001' }),
+    mkEvent('wg.researcher.start', { territory_id: 't_001', aligned_id: 'aq_001' }),
+    mkEvent('wg.researcher.start', { territory_id: 't_001', aligned_id: 'aq_002' }),
+    mkEvent('wg.researcher.start', { territory_id: 't_001', aligned_id: 'aq_003' }),
+    mkEvent('wg.researcher.done', { territory_id: 't_001', aligned_id: 'aq_001', outcome: 'found', finding_count: 1 }),
+    mkEvent('wg.researcher.done', { territory_id: 't_001', aligned_id: 'aq_002', outcome: 'found', finding_count: 1 }),
+  ]);
+  const wgPartial = partial.workingGroups['t_001'];
+  assert.equal(wgPartial.researcherTotal, 3);
+  assert.equal(wgPartial.researcherDone, 2);
+  assert.equal(wgPartial.substages.researcher, 'running', 'substage must stay running while researchers in flight');
+
+  // The final researcher.done flips it.
+  const complete = reduce(
+    partial,
+    mkEvent('wg.researcher.done', { territory_id: 't_001', aligned_id: 'aq_003', outcome: 'found', finding_count: 1 })
+  );
+  assert.equal(complete.workingGroups['t_001'].researcherDone, 3);
+  assert.equal(complete.workingGroups['t_001'].substages.researcher, 'done');
+});
+
+test('wg.researcher.done guard — does not flip substage when researcherTotal is 0', () => {
+  // Out-of-order event: a researcher.done arrives before any researcher.start.
+  // The guard (researcherTotal > 0) prevents the substage from spuriously
+  // flipping to 'done' for a WG with no researcher activity yet.
+  const state = applyEvents([
+    mkEvent('wg.start', { territory_id: 't_001' }),
+    mkEvent('wg.researcher.done', { territory_id: 't_001', aligned_id: 'aq_phantom', outcome: 'found', finding_count: 0 }),
+  ]);
+  const wg = state.workingGroups['t_001'];
+  assert.equal(wg.researcherTotal, 0);
+  assert.equal(wg.researcherDone, 1);
+  // Critical: substage must stay 'pending', not flip to 'done'.
+  assert.equal(wg.substages.researcher, 'pending');
+});
+
 test('wg.end marks all substages as done', () => {
   const state = applyEvents([
     mkEvent('wg.start', { territory_id: 't_001', territory_name: 'test' }),

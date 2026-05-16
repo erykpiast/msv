@@ -2,14 +2,7 @@
 
 const React = require('react');
 const { getInk } = require('../inkExports');
-const { COLORS } = require('../style');
-
-const STATUS_ICON = {
-  running: '→',
-  done: '✓',
-  failed: '✗',
-  pending: ' ',
-};
+const { COLORS, STATUS_ICON } = require('../style');
 
 const STAGE_LABELS = {
   discovery: '1. Discovery',
@@ -86,16 +79,21 @@ function StageRow({ name, status, summary, startedAt, endedAt, tokens, now }) {
 }
 
 function StageList({ stages }) {
-  const { Box, Text } = React;
   const { useState, useEffect } = React;
   const { Box: InkBox, Text: InkText } = getInk();
 
   const [now, setNow] = useState(Date.now());
 
+  // Only run the 1s ticker while at least one stage is actively running.
+  // Once the pipeline finishes (or before anything starts), we stop the
+  // interval so we don't pointlessly re-render the dashboard every second.
+  const anyRunning = Object.values(stages).some((s) => s && s.status === 'running');
+
   useEffect(() => {
+    if (!anyRunning) return;
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
-  }, []);
+  }, [anyRunning]);
 
   const stageNames = Object.keys(STAGE_LABELS);
 

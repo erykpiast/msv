@@ -1,5 +1,10 @@
 'use strict';
 
+// Events deliberately not formatted here (dashboard-only):
+// - wg.<substage>.start (ideation/adversarial/alignment/observation/debate) — log shows only the .done summary
+// - wg.move — fires per move; too noisy for the log stream
+// - cross_pollination.reaction — fires per reaction; the .done aggregate is shown
+// - forum.contradiction.judged — fires per judgement; the .done aggregate is shown
 const FORMATTERS = {
   'pipeline.start': (e) =>
     `[info] [pipeline] starting ${e.idea_id} · ${e.raw_capture}`,
@@ -68,13 +73,16 @@ const FORMATTERS = {
       : `[error] [api] call ${e.call_id} failed · ${e.error_message}`,
 };
 
+const { sanitizeEnvelope } = require('./sanitize');
+
 function attach(bus, opts = {}) {
   const verboseApi = !!opts.verboseApi;
   const off = bus.onAny((env) => {
     if (!verboseApi && env.name && env.name.startsWith('api.')) return;
-    const fmt = FORMATTERS[env.name];
+    const safeEnv = sanitizeEnvelope(env);
+    const fmt = FORMATTERS[safeEnv.name];
     if (!fmt) return;
-    process.stdout.write(`${fmt(env)}\n`);
+    process.stdout.write(`${fmt(safeEnv)}\n`);
   });
   return async () => off();
 }

@@ -1,5 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const { applyReactionEffect, buildBaseNodes, buildDeadEndQuestions, contradictionKey } = require('../src/forum');
 
@@ -208,6 +210,30 @@ test('buildDeadEndQuestions includes all aligned questions when pair aborts with
 
 // Test: a researcher report referencing an aligned_id that doesn't resolve in
 // the pair shouldn't crash — the dead-end entry should still be emitted.
+// --- Bus emit contract test ---
+//
+// aggregateForum is LLM-driven (judgeContradiction calls client.messages.create
+// per pair). A full integration test would require mocking that surface for
+// every pair × every contradiction. Per the spec's pragmatic stance, a
+// grep-based contract test catches the most-likely regression — a developer
+// deleting one of the required emit sites — without running the pipeline.
+test('forum.js emits forum.contradiction.judged and forum.done', () => {
+  const forumSrc = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'forum.js'),
+    'utf8'
+  );
+  assert.match(
+    forumSrc,
+    /bus\.emit\(\s*['"]forum\.contradiction\.judged['"]/,
+    `forum.js no longer emits 'forum.contradiction.judged' — spec §10.6 regression`
+  );
+  assert.match(
+    forumSrc,
+    /bus\.emit\(\s*['"]forum\.done['"]/,
+    `forum.js no longer emits 'forum.done' — spec §10.6 regression`
+  );
+});
+
 test('buildDeadEndQuestions tolerates dangling aligned_id refs in researcher reports', () => {
   const pairDebates = [
     {

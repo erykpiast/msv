@@ -48,6 +48,18 @@ function setBus(bus) {
 
 const waiters = [];
 
+// Reset per-run stats. `callCounter` is intentionally NOT reset — it's a stable
+// monotonic identifier used to correlate api.call.start / .end / .retry events
+// across the run, not a per-run statistic. Waiters are cleared so a fresh run
+// doesn't inherit pending acquire waiters from a previous (presumably crashed) run.
+function resetStats() {
+  inflight = 0;
+  queued = 0;
+  completed = 0;
+  retried = 0;
+  waiters.length = 0;
+}
+
 function getStats() {
   return { inflight, queued, completed, retried };
 }
@@ -213,4 +225,4 @@ async function enqueue(fn, options = {}) {
   }
 }
 
-module.exports = { enqueue, getStats, setBus };
+module.exports = { enqueue, getStats, setBus, resetStats };

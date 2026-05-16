@@ -55,6 +55,17 @@ function updateWg(workingGroups, territory_id, updater) {
   };
 }
 
+// Helper for the boilerplate-heavy wg.<substage>.start / .done cases that only
+// flip a single substage status. Specialized cases (researcher, observation
+// when researcher activity needs to be cleared, etc.) handle their own state.
+function setSubstage(workingGroups, territory_id, substage, status, extra = {}) {
+  return updateWg(workingGroups, territory_id, (wg) => ({
+    ...wg,
+    substages: { ...wg.substages, [substage]: status },
+    ...extra,
+  }));
+}
+
 function reduce(state, event) {
   const name = event.name;
   const recent = appendRecent(state.recent, event);
@@ -96,7 +107,9 @@ function reduce(state, event) {
       };
 
     case 'pipeline.stage.heartbeat':
-      return { ...state, recent };
+      // Heartbeats are ignored entirely — they don't even count toward recent
+      // (otherwise the recent tail would constantly show "heartbeat" lines).
+      return state;
 
     case 'pipeline.complete':
       return {
@@ -136,61 +149,44 @@ function reduce(state, event) {
     case 'wg.ideation.start':
       return {
         ...state,
-        workingGroups: updateWg(state.workingGroups, event.territory_id, (wg) => ({
-          ...wg,
-          substages: { ...wg.substages, ideation: 'running' },
-        })),
+        workingGroups: setSubstage(state.workingGroups, event.territory_id, 'ideation', 'running'),
         recent,
       };
 
     case 'wg.ideation.done':
       return {
         ...state,
-        workingGroups: updateWg(state.workingGroups, event.territory_id, (wg) => ({
-          ...wg,
-          substages: { ...wg.substages, ideation: 'done' },
+        workingGroups: setSubstage(state.workingGroups, event.territory_id, 'ideation', 'done', {
           totalCandidates: event.total_candidates,
-        })),
+        }),
         recent,
       };
 
     case 'wg.adversarial.start':
       return {
         ...state,
-        workingGroups: updateWg(state.workingGroups, event.territory_id, (wg) => ({
-          ...wg,
-          substages: { ...wg.substages, adversarial: 'running' },
-        })),
+        workingGroups: setSubstage(state.workingGroups, event.territory_id, 'adversarial', 'running'),
         recent,
       };
 
     case 'wg.adversarial.done':
       return {
         ...state,
-        workingGroups: updateWg(state.workingGroups, event.territory_id, (wg) => ({
-          ...wg,
-          substages: { ...wg.substages, adversarial: 'done' },
-        })),
+        workingGroups: setSubstage(state.workingGroups, event.territory_id, 'adversarial', 'done'),
         recent,
       };
 
     case 'wg.alignment.start':
       return {
         ...state,
-        workingGroups: updateWg(state.workingGroups, event.territory_id, (wg) => ({
-          ...wg,
-          substages: { ...wg.substages, alignment: 'running' },
-        })),
+        workingGroups: setSubstage(state.workingGroups, event.territory_id, 'alignment', 'running'),
         recent,
       };
 
     case 'wg.alignment.done':
       return {
         ...state,
-        workingGroups: updateWg(state.workingGroups, event.territory_id, (wg) => ({
-          ...wg,
-          substages: { ...wg.substages, alignment: 'done' },
-        })),
+        workingGroups: setSubstage(state.workingGroups, event.territory_id, 'alignment', 'done'),
         recent,
       };
 
@@ -235,51 +231,50 @@ function reduce(state, event) {
     case 'wg.researcher.done':
       return {
         ...state,
-        workingGroups: updateWg(state.workingGroups, event.territory_id, (wg) => ({
-          ...wg,
-          researcherDone: wg.researcherDone + 1,
-          researcherActivity: null,
-        })),
+        workingGroups: updateWg(state.workingGroups, event.territory_id, (wg) => {
+          const newDone = wg.researcherDone + 1;
+          // Only flip the substage to 'done' once every started researcher has
+          // also reported done. researcherTotal is incremented per .start, so
+          // out-of-order events can produce researcherTotal === 0 here — keep
+          // the substage as-is in that case.
+          const allDone = wg.researcherTotal > 0 && newDone >= wg.researcherTotal;
+          return {
+            ...wg,
+            researcherDone: newDone,
+            researcherActivity: null,
+            substages: allDone
+              ? { ...wg.substages, researcher: 'done' }
+              : wg.substages,
+          };
+        }),
         recent,
       };
 
     case 'wg.observation.start':
       return {
         ...state,
-        workingGroups: updateWg(state.workingGroups, event.territory_id, (wg) => ({
-          ...wg,
-          substages: { ...wg.substages, observation: 'running' },
-        })),
+        workingGroups: setSubstage(state.workingGroups, event.territory_id, 'observation', 'running'),
         recent,
       };
 
     case 'wg.observation.done':
       return {
         ...state,
-        workingGroups: updateWg(state.workingGroups, event.territory_id, (wg) => ({
-          ...wg,
-          substages: { ...wg.substages, observation: 'done' },
-        })),
+        workingGroups: setSubstage(state.workingGroups, event.territory_id, 'observation', 'done'),
         recent,
       };
 
     case 'wg.debate.start':
       return {
         ...state,
-        workingGroups: updateWg(state.workingGroups, event.territory_id, (wg) => ({
-          ...wg,
-          substages: { ...wg.substages, debate: 'running' },
-        })),
+        workingGroups: setSubstage(state.workingGroups, event.territory_id, 'debate', 'running'),
         recent,
       };
 
     case 'wg.debate.done':
       return {
         ...state,
-        workingGroups: updateWg(state.workingGroups, event.territory_id, (wg) => ({
-          ...wg,
-          substages: { ...wg.substages, debate: 'done' },
-        })),
+        workingGroups: setSubstage(state.workingGroups, event.territory_id, 'debate', 'done'),
         recent,
       };
 
@@ -309,6 +304,21 @@ function reduce(state, event) {
             claimCount: event.claim_count,
             terminatedBy: event.terminated_by,
           };
+        }),
+        recent,
+      };
+
+    case 'wg.failed':
+      return {
+        ...state,
+        workingGroups: updateWg(state.workingGroups, event.territory_id, (wg) => {
+          // Flip every non-done substage to 'failed' so the card freezes in a
+          // visually-honest state rather than showing a substage still running.
+          const substages = {};
+          for (const [k, v] of Object.entries(wg.substages)) {
+            substages[k] = v === 'done' ? 'done' : 'failed';
+          }
+          return { ...wg, substages, failed: true, failReason: event.reason };
         }),
         recent,
       };

@@ -2,14 +2,7 @@
 
 const React = require('react');
 const { getInk } = require('../inkExports');
-const { COLORS } = require('../style');
-
-const STATUS_ICON = {
-  running: '→',
-  done: '✓',
-  failed: '✗',
-  pending: '·',
-};
+const { COLORS, STATUS_ICON } = require('../style');
 
 const SUBSTAGE_LABELS = {
   ideation: 'ideation',
@@ -25,7 +18,10 @@ const SUBSTAGE_ORDER = ['ideation', 'adversarial', 'alignment', 'researcher', 'o
 function SubstageRow({ name, status, researcherTotal, researcherDone, researcherActivity }) {
   const { Box, Text } = getInk();
 
-  const icon = STATUS_ICON[status] || '·';
+  // Cards use a denser glyph for pending substages than the stage list,
+  // which keeps the rows visually compact even when several substages
+  // haven't started yet.
+  const icon = status === 'pending' ? '·' : (STATUS_ICON[status] || ' ');
   const color = COLORS[status] || COLORS.muted;
   const label = SUBSTAGE_LABELS[name] || name;
 

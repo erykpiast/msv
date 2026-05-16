@@ -71,3 +71,53 @@ test('EVENTS catalog contains key event names', () => {
   assert.equal(EVENTS.PIPELINE_START, 'pipeline.start');
   assert.equal(EVENTS.WG_END, 'wg.end');
 });
+
+// Test: EVENTS catalog exhaustiveness.
+//
+// Walks every .js file under src/ recursively, greps for literal
+// `<bus|busRef>.emit('<name>'` patterns, and asserts every name appears in
+// the EVENTS catalog values.
+//
+// Limitations:
+// - Dynamic emits (`bus.emit(name, ...)` with a variable) are skipped because
+//   the regex only matches string literals. This is intentional — there are
+//   currently no dynamic emits in src/, and adding one would require updating
+//   this test alongside it.
+// - The regex matches single- and double-quoted strings; backtick template
+//   literals are not supported (none exist today).
+test('EVENTS catalog covers every literal bus.emit(...) call in src/', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const srcRoot = path.resolve(__dirname, '..', 'src');
+
+  // Match bus.emit('name', ...) or busRef.emit('name', ...) — both quote styles.
+  const EMIT_REGEX = /\b(?:bus|busRef)\??\.emit\(\s*['"]([\w.]+)['"]/g;
+
+  const emitted = new Set();
+  const entries = fs.readdirSync(srcRoot, { recursive: true, withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    if (!entry.name.endsWith('.js')) continue;
+    const full = path.join(entry.parentPath || entry.path, entry.name);
+    const source = fs.readFileSync(full, 'utf8');
+    let match;
+    while ((match = EMIT_REGEX.exec(source)) !== null) {
+      emitted.add(match[1]);
+    }
+  }
+
+  const catalog = new Set(Object.values(EVENTS));
+  const missing = [...emitted].filter((name) => !catalog.has(name));
+  assert.deepEqual(
+    missing,
+    [],
+    `event names emitted in src/ but missing from EVENTS catalog: ${missing.join(', ')}`
+  );
+
+  // Sanity: catalog should also be non-empty and contain at least the events
+  // we know are emitted (guards against the regex silently matching nothing).
+  assert.ok(emitted.size > 0, 'no bus.emit(...) calls were found — regex broken?');
+  assert.ok(emitted.has('pipeline.start'));
+  assert.ok(emitted.has('wg.start'));
+  assert.ok(emitted.has('api.call.start'));
+});

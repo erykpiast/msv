@@ -34,7 +34,7 @@ const { CancellationError, classifyError, sanitiseMessage, actionableMessage } =
 const { createBus } = require('../bus');
 const { selectTui } = require('../tui');
 const { attachRecorder } = require('../event_recorder');
-const { setBus: setApiQueueBus } = require('../api_queue');
+const { setBus, resetStats } = require('../api_queue');
 
 const HEARTBEAT_MS = 15_000;
 
@@ -199,9 +199,11 @@ async function runWorkingGroupsConcurrently({
   settled.forEach((result, index) => {
     const territory = territories[index];
     if (result.status === 'rejected' && bus) {
-      const name = territory.name || territory.id || territory.territory_id;
+      // Always use territory id (never .name, which is a display label) and slug
+      // it so it lines up with the territory_id values emitted from the wg internals.
+      const territoryId = safeSlug(territory.id || territory.territory_id);
       const reason = result.reason?.message || String(result.reason);
-      bus.emit('wg.failed', { territory_id: safeSlug(name), reason });
+      bus.emit('wg.failed', { territory_id: territoryId, reason });
     }
   });
 
@@ -220,6 +222,7 @@ async function runPipeline(idea, client, { cancellationToken, bus } = {}) {
   await writeIdea(idea);
 
   if (bus) bus.emit('pipeline.start', {
+    idea_id: idea.id,
     raw_capture: idea.raw_capture,
     model: MODEL,
     synthesizer_model: SYNTHESIZER_MODEL,
@@ -507,6 +510,7 @@ async function runPipeline(idea, client, { cancellationToken, bus } = {}) {
   if (bus) {
     const queueStats = typeof getStats === 'function' ? getStats() : null;
     bus.emit('pipeline.complete', {
+      idea_id: idea.id,
       ok: true,
       used_executor_calls: inv.budget.used_executor_calls,
       used_total_tokens: inv.budget.used_total_tokens,
@@ -519,17 +523,18 @@ async function runPipeline(idea, client, { cancellationToken, bus } = {}) {
 async function runOne(idea, client, { cancellationToken, tuiModule, tuiOpts } = {}) {
   const bus = createBus();
   bus.setIdea(idea.id);
-  setApiQueueBus(bus);
+  resetStats();
+  setBus(bus);
 
-  const recordCleanup = await attachRecorder(bus, { idea });
-  const tuiResult = tuiModule ? await tuiModule.attach(bus, { idea, ...tuiOpts }) : null;
-  const tuiCleanup = tuiResult
-    ? typeof tuiResult === 'function'
-      ? tuiResult
-      : tuiResult.cleanup
-    : null;
+  let recordCleanup = async () => {};
+  let tuiCleanup = async () => {};
 
   try {
+    recordCleanup = attachRecorder(bus, { idea });
+    if (tuiModule) {
+      const tuiResult = await tuiModule.attach(bus, { idea, ...tuiOpts });
+      tuiCleanup = typeof tuiResult === 'function' ? tuiResult : tuiResult.cleanup;
+    }
     await runPipeline(idea, client, { cancellationToken, bus });
     return { ok: true };
   } catch (error) {
@@ -568,7 +573,7 @@ async function runOne(idea, client, { cancellationToken, tuiModule, tuiOpts } = 
   } finally {
     if (tuiCleanup) await tuiCleanup();
     if (recordCleanup) await recordCleanup();
-    setApiQueueBus(null);
+    setBus(null);
   }
 }
 

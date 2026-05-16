@@ -215,8 +215,35 @@ async function findLatestIdea() {
   return valid[0]?.filePath || null;
 }
 
+const HELP_TEXT = `tools/stage-stats.js — per-stage timing and token stats from historical runs.
+
+Reads the append-only event log at ~/.msv/ideas/<id>/events.jsonl (or
+~/.msv/archive/<id>/events.jsonl for archived ideas) and computes per-stage
+duration, API-call counts, and token usage.
+
+Usage:
+  node tools/stage-stats.js                # most recent run
+  node tools/stage-stats.js <id>           # specific run
+  node tools/stage-stats.js --all          # aggregate across all runs
+  node tools/stage-stats.js --json         # machine-readable JSON output
+  node tools/stage-stats.js --help         # this message
+
+Flags:
+  <id>      Idea uuid; resolves under ~/.msv/ideas/<id>/ then ~/.msv/archive/<id>/.
+  --all     Process every idea directory with an events.jsonl file; print a
+            cross-run aggregate table plus each individual run summary.
+  --json    Emit the raw stats array as JSON instead of a formatted table.
+  --help    Print this message and exit.
+
+Set MSV_ROOT to point at an alternative root (default: ~/.msv).
+`;
+
 async function main() {
   const args = process.argv.slice(2);
+  if (args.includes('--help') || args.includes('-h')) {
+    process.stdout.write(HELP_TEXT);
+    process.exit(0);
+  }
   const flagJson = args.includes('--json');
   const flagAll = args.includes('--all');
   const id = args.find((a) => !a.startsWith('--'));

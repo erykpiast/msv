@@ -70,6 +70,33 @@ for (const { event, expected } of CASES) {
   });
 }
 
+// api.* events are muted by default (start with 'api.'). Cases that exercise
+// these formatters must explicitly request verboseApi.
+const VERBOSE_API_CASES = [
+  {
+    event: { name: 'api.call.retry', call_id: 7, attempt: 2, reason: 'rate limit', wait_ms: 1000 },
+    expected: '[warn] [api] call 7 retry 2 · rate limit · wait=1000ms',
+  },
+];
+
+for (const { event, expected } of VERBOSE_API_CASES) {
+  test(`log formats ${event.name} correctly with verboseApi=true`, async () => {
+    const bus = createBus();
+    const cleanup = attach(bus, { verboseApi: true });
+    const out = captureStdout(() => bus.emit(event.name, event));
+    await cleanup();
+    assert.equal(out.trim(), expected);
+  });
+
+  test(`${event.name} is muted by default (verboseApi unset)`, async () => {
+    const bus = createBus();
+    const cleanup = attach(bus);
+    const out = captureStdout(() => bus.emit(event.name, event));
+    await cleanup();
+    assert.equal(out, '');
+  });
+}
+
 test('api.call.start is muted when verboseApi=false', async () => {
   const bus = createBus();
   const cleanup = attach(bus, { verboseApi: false });
