@@ -38,7 +38,7 @@ function renderSteerCard(idea) {
     ...(tensions.length ? tensions.map((t) => `· ${t}`) : ['(none)']),
     '',
     DIVIDER,
-    '[r]ead full report  [d]eeper (new topic)  [k]ill  [n]otes',
+    '[r]ead full report  [d]eeper (new topic)  [k]ill  [n]otes  [i]nspect — open visual transcript',
   ];
   return lines.join('\n');
 }

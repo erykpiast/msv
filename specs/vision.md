@@ -1,72 +1,103 @@
 # msv — Vision
 
-> A tool that puts you meaningfully further along on an idea by staging a structured argument between deliberately diverse perspectives — not a survey, not a chat, not a search.
+> A great-question machine. Diverse personas exist to surface the questions you wouldn't have asked yourself. Search agents answer them. A synthesizer reports back. The unique value is in *what gets asked* — not just *what gets concluded*.
 
 This is a living doc. It captures *why* msv exists and *what bet* I'm making. The architecture and the pipeline live in `architecture.md`; this file is for remembering the point.
 
-## The problem
+## What this is, in one paragraph
 
-Researching an idea — actually understanding its landscape, not just collecting facts about it — is hard in a specific way that current tools don't address.
+msv reads a half-formed idea and runs a small society of LLM personas over it. The personas come from real intellectual traditions discovered per-topic. They are paired and pushed through a structured debate, but the *output* of that debate isn't a position — it's a set of research questions that survived contact with deliberately diverse viewpoints. Search agents go answer those questions. The synthesizer reads the answers and writes back. What lands on the user's screen is "here are the questions the system asked, here's what it found, here's what nobody could find evidence for." The promise is "I wouldn't have thought to ask half of these."
 
-When I have a half-formed thought, what I usually want is not "tell me what's true about this." I want to understand *what people who think seriously about this disagree about*, where the load-bearing assumptions are, and which positions are worth taking. That's a different deliverable from a summary.
+## How this reframe happened
 
-What I usually do, and where it falls short:
+Earlier versions of this doc framed msv as a multi-agent *debate* tool whose value was structured disagreement. That framing wasn't wrong — the debate mechanics are still here — but it was incomplete in a way that prototype runs made obvious.
 
-- **Search and skim.** Five tabs in, I have a pile of facts and no position. The disagreements are implicit in the sources but I never assemble them.
-- **Ask one chatbot.** I get a balanced, encyclopedic answer that's been carefully sanded down to offend nobody. Confidence is uniform and unearned. It tells me the shape of the consensus but not where the real seams are.
-- **Talk to one person.** Best signal-to-noise, but it's one perspective. I get their seams, not the field's seams.
+Watching actual investigations, two things were clear:
 
-What existing tools do, and where they fall short for this specific task:
+1. The debates looked close-minded. Personas mostly defended their priors. The "disagreement" was real but not the artifact of value.
+2. The questions the personas raised on the way to those defenses were *much* more interesting than the conclusions. They pointed at angles I would not have thought to investigate.
 
-- **Search engines** return documents, not arguments. Synthesis is on me.
-- **Single-agent chat** flattens. One model, one voice, one set of priors. Even with web search, it speaks with a unified voice and hedges where it should pick sides.
-- **STORM-like summarizers** (the closest prior art) produce neutral, encyclopedic outlines. That's their explicit goal and they do it well. But neutrality is the wrong target when I want a *position*. I came for an opinion the evidence supports, not balanced coverage.
+A deeper observation falls out of this. A background-researcher is only worth running autonomously if it can do two things a human can't easily do for themselves:
 
-The gap: a tool that *takes positions where the evidence warrants and names the contradictions where it doesn't* — and that does so by making the disagreements actually happen, not by hand-waving "consider multiple perspectives."
+- **Save time on active research.** I don't want to read intermediate answers, formulate follow-ups, wait, repeat. I want to come back to something already chewed on.
+- **Surface quality questions I wouldn't think to ask.** This is the unique payoff. Anyone can read sources. Few people, working alone, can credibly populate a question set across intellectual traditions they don't already inhabit.
 
-## What we're betting on
+The reframe: msv is for the second payoff, and uses the first to deliver it. The debate apparatus is preserved as a *filter* — it refines and tests the questions before search agents spend tokens on them. But the debate is no longer the centerpiece. The questions are.
 
-The hypothesis, lifted from the spec:
+## The hypothesis, sharpened
 
-> *Structured disagreement between deliberately diverse personas, with confidence-weighted aggregation, leaves the user meaningfully further along in understanding an idea's landscape than they were before.*
+> A structured multi-agent system, with persona-anchored interrogative ideation and minority-protected alignment, produces a research question set that a thoughtful human, given the same topic, would describe as "I wouldn't have thought to ask half of these" — and the answers to those questions leave them meaningfully further along than reading a single-agent synthesis would.
 
-Three words in that sentence are doing real work. Each is a specific bet against a tempting alternative.
+Several words are doing real work.
 
-**Diverse.** Personas are discovered per-investigation by surveying the real intellectual traditions speaking about the topic — not invented from LLM priors, not pulled from a fixed cast. The reason: cold-generated personas sound plausible but are homogeneous; personas grounded in actual prior discourse disagree the way their fields actually disagree. Diversity is the prerequisite for everything downstream. Without it, the debate is theatre.
+**Persona-anchored interrogative ideation.** Personas are interrogative engines, not advocates. Their primary job is to ask questions their tradition would ask, not to argue positions their tradition would defend. They're still grounded in real intellectual lineages discovered per-investigation (see `architecture.md` §5.1), because cold-generated personas ask homogeneous questions. The shift from "what do you argue?" to "what do you ask?" is enforced at the prompt level — personas open with interrogative posture, not advocacy posture.
 
-**Structured disagreement.** Not consensus. Pairs of personas are deliberately matched to maximize tension and run a constrained debate with five discourse moves (Claim, Support, Rebut, Question, Concede — defined inline so the system can enforce engagement). Concession is allowed and counted, but the system actively resists two collapse modes: personas calcifying into their roles, and debates devolving into vacuous mutual agreement. Disagreement is the product, not a phase to be resolved away.
+**Minority-protected alignment.** When a pair of personas works through a sub-topic, each persona contributes at least one question that survives to the research stage, regardless of whether the pair "aligned" on it. Both members must engage with each other's minority questions — they can't be quietly discarded by the dominant voice. This is load-bearing. Without it, the more confident persona's worldview wins, and the system collapses back into a homogeneous interrogator with extra steps.
 
-**Confidence-weighted.** Every move carries a 0–10 confidence grounded in articulated evidence. The synthesis weights by confidence rather than averaging. A high-confidence claim with a low-confidence rebuttal doesn't get a "both sides" treatment; it gets stated, with the rebuttal flagged as a caveat. Contradictions across working groups are surfaced explicitly, not averaged. This is the bet against the most common LLM-synthesis failure: producing "on the one hand, on the other hand" prose that tells the reader nothing.
+**A research question set, not a position.** The first-class artifact is the questions, plural, with provenance — which persona raised it, which pair carried it through, which ones found evidence and which didn't. The synthesis reports back across this set. The reader sees "here are X questions the system asked across Y territories" and that alone has standalone value, before the answers are even considered.
 
-Why this combination, and not the obvious alternatives:
+## What the debate apparatus is for now
 
-- **Why not majority vote?** Truth isn't a popularity contest among personas I made up.
-- **Why not one big "consider all perspectives" prompt?** That's what single-agent chat already does, and it's why single-agent chat fails at this task. The disagreement has to actually happen — different contexts, different roles, different conversations — for the artifacts to carry independent signal.
-- **Why not a hierarchy or a debate tree?** Co-STORM-style mind maps are richer but the hypothesis test doesn't need that richness yet. A flat ranked list of claims with explicit contradiction links is the minimum that lets the synthesizer do its job. If the loop works, hierarchy is a v0.2 question.
+The Claim / Support / Rebut / Question / Concede protocol is still here. It still runs. Confidence is still attached to every move. The difference is purpose: the debate's job is to *filter and refine the questions* before they go to search, not to produce positions for the user.
 
-The prototype is the experiment. If structured disagreement + confidence-weighting doesn't produce noticeably better synthesis than a single agent could, the architecture is wrong and the hypothesis is falsified. That's a real possibility and a valid outcome.
+Concretely:
+
+- A pair stage surfaces questions through the act of arguing.
+- The minority-protection rule guarantees the question set isn't pruned by debate dynamics.
+- Surviving questions go to per-question search sub-agents that try to actually answer them.
+- The synthesizer reads questions + answers + dead ends and writes the report.
+
+This is a downgrade of the debate from "the value" to "the question-filter," not a deletion. The mechanism that made the original bet defensible (real disagreement between deliberately diverse agents) is the same mechanism that makes the question set non-homogeneous. The structured-disagreement bet hasn't been displaced; it's been put in service of question-generation.
+
+## Dead ends matter
+
+A question the system asked, researched, and found no evidence for is not noise to discard. It's signal. It tells the reader: "this angle was considered, and either the evidence isn't out there or we couldn't find it." That's information the reader couldn't get from a single-agent synthesis, which would silently never have asked.
+
+The synthesis preserves dead-end questions explicitly. They appear in the output, flagged as such. Treating them as failures of the pipeline rather than artifacts of the pipeline would discard most of the interrogative value.
 
 ## What success looks like
 
-Success is qualitative and deliberately so. From the spec's Definition of Done (§9):
+Success is still qualitative and still subjective.
 
-The synthesis makes me *feel meaningfully further along* in understanding the topic. Not "I learned facts" — I can get facts from anywhere. Further along means: I now know which assumptions are load-bearing, where serious people disagree and why, which position the evidence actually supports, and which tensions genuinely don't resolve. If I read the report and feel like I'd be embarrassed to defend a strong position before reading it but could defend one after — that's the bar.
+After 5–10 real runs on real ideas, I should be able to say two things about a typical run:
 
-Validation surface: **5–10 real runs on real ideas.** Not benchmarks, not synthetic topics. Ideas I actually have. The judgment is mine and it's subjective on purpose, because the thing being measured (am I further along?) is inherently subjective.
+1. *"I wouldn't have thought to ask half of these questions on my own."* The question set surfaces angles outside my own habits of thought.
+2. *"The answers leave me meaningfully further along than a single-agent synthesis would."* The combination of unexpected questions and credible answers does work that I couldn't have done by asking one model the same topic.
 
-A **negative result is a valid outcome.** If after 5–10 runs the synthesis still feels balanced-and-empty, or if the personas calcify, or if confidence numbers turn out arbitrary in ways that break ranking, that's information. The prototype's job is to find out whether the loop works at all — not to prove it does.
+If either half is missing — if the questions are pedestrian, or if the answers are thin even when the questions are good — the bet is falsified. **Negative result is a valid outcome.** The prototype's job is to find out whether the loop works, not to prove it does.
 
-Two weeks of normal use without needing to restructure the schema is the secondary signal. If the data model has to change every few days, the architecture isn't stable enough to test the real question.
+Validation surface: 5–10 real runs on real ideas. Not benchmarks. Ideas I actually have. Judgment is mine and is subjective on purpose, because "did this ask me a question I wouldn't have asked?" is inherently subjective.
+
+Stability signal: two weeks of normal use without restructuring the schema. If the data model has to change every few days, the architecture isn't stable enough to test the hypothesis.
 
 ## What this is NOT
 
-To save future-me (and anyone else who reads this) from misreading the project:
-
 - **Not a production tool.** No daemon, no scheduler, no auth, no multi-user surface. Local JSON in `~/.msv/ideas/`. One developer, one machine.
-- **Not optimized for cost.** A run costs $1–3 in tokens and 1–3 minutes of wall time. That's on purpose. The whole point is that real disagreement between many agents is expensive, and the bet is that expense buys insight that cheaper approaches can't.
-- **Not a neutral encyclopedia.** STORM does that, and does it well. msv exists because I want the *opposite* — opinionated synthesis that picks sides the evidence supports. If you want balanced coverage of a topic, use STORM.
-- **Not a chat.** No mid-investigation steering, no turn-based iteration. The user has one steering surface: the topic pitch. After that, the agent society runs to completion and the user reads the output. The bet on background long-running investigation is itself part of the hypothesis.
-- **Not a roadmap to a startup.** There is no v2, no growth plan, no thing-that-survives-contact-with-a-second-user. If the loop produces real insight after a month of use, *then* it's worth thinking about productization. Not before.
-- **Not a benchmark project.** Success isn't measured against a dataset. It's measured against my own felt sense of whether the synthesis was useful on real ideas. That's a smaller, lower-prestige claim than "we beat SOTA on X" and it's the only claim worth making here.
+- **Not a neutral encyclopedia.** STORM-style summarizers produce balanced coverage; that's their goal and they do it well. msv is asking different questions, in service of a different deliverable, in a voice that takes the questions seriously rather than sanding them flat.
+- **Not a chat.** No mid-investigation steering. One steering surface: the topic pitch. After that, the system runs to completion. The bet on background long-running investigation is itself part of the hypothesis.
+- **Not a roadmap to a startup.** There is no v2, no growth plan. If the loop produces real insight after a month of use, *then* productization is worth thinking about. Not before.
+- **Not a benchmark project.** Success is measured against my own felt sense on real ideas. Lower-prestige than "we beat SOTA," and the only claim worth making here.
 
-If a feature request points at any of the above, the answer is no — at least for the prototype. The point of the prototype is to find out whether the core bet pays off. Everything else is a distraction until that question has an answer.
+## What changed in non-goals
+
+The earlier framing made two commitments the new framing relaxes.
+
+**Model heterogeneity is now in scope.** Pair stages run on a 1M-context Sonnet because they consume large evidence pools from the per-question search sub-agents. The synthesizer can run on a smaller, cheaper model — it reads structured claims and questions, not raw evidence. This isn't a roadmap to multi-model orchestration; it's pragmatic acceptance that different stages have different context needs.
+
+**Cost ceiling rises.** Per-question research sub-agents make a run noticeably more expensive. Realistic range: ~$5–10 per run, up from the earlier $1–3 estimate. The honest framing: msv is not a tool for shower thoughts. It's a tool for ideas worth spending an hour and a few dollars on. If a run costs the same as a decent lunch and saves an evening of poking at a topic, that's the trade. If it doesn't, the hypothesis was wrong.
+
+## What stays the same
+
+- Single-developer prototype, evening project.
+- Local JSON storage in `~/.msv/ideas/`.
+- Three commands: `msv add`, `msv run`, `msv review`.
+- Definition of done is subjective: 5–10 real runs and a felt sense of whether the questions and findings are valuable. Negative result is valid.
+- Most "Out of scope" items still apply (no production tool, no multi-user, no roadmap).
+
+## Closing
+
+The original framing called msv a structured-disagreement tool. That was a real bet and the mechanism still works. What changed is what the mechanism is *for*. The valuable artifact, the thing that makes a tool like this worth building when single-agent chat already exists, is the question set the system asks on the user's behalf — questions a thoughtful person, working alone on the same topic, would not have arrived at.
+
+Diverse personas as question-engines. Pair debates as question-filters. Search agents as answerers. Synthesizer as reporter. Dead ends preserved. Minority questions protected. The bet is that this configuration produces something a single agent — no matter how smart — structurally cannot.
+
+If after a month of real use the question sets are pedestrian, or the answers are thin, or the synthesis collapses back to "on the one hand, on the other hand" prose, the bet was wrong. That's an acceptable outcome. The point of the prototype is to find out.

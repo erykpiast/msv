@@ -45,7 +45,7 @@ async function runPerspectiveDiscovery({ client, idea, model, budget }) {
     payload: { topic: rawCapture },
   });
 
-  const { response, toolUse, usage } = await runStructuredCall({
+  const { response, toolUse, usage, web_searches } = await runStructuredCall({
     client,
     system: PERSPECTIVE_DISCOVERY,
     model,
@@ -60,6 +60,10 @@ async function runPerspectiveDiscovery({ client, idea, model, budget }) {
     tools: [webSearchTool({ maxUses: 5 }), EMIT_PERSONAS_TOOL],
     forceTool: 'emit_personas',
   });
+
+  for (const search of web_searches || []) {
+    await appendLog(idea.id, 'discovery', { kind: 'web_search', payload: search });
+  }
 
   const payload = toolUse.input;
   const candidatePersonas = (payload.candidate_personas || []).map((persona, index) => ({

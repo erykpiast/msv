@@ -141,3 +141,12 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+node_modules/.vite/
+inspect-view.json
+
+# Claude Code per-developer overrides
+.claude/settings.local.json
+
+# Simple Task Master - User tasks are git-ignored
+.simple-task-master/tasks/
+.simple-task-master/lock

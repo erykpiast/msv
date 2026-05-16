@@ -159,7 +159,7 @@ async function emitOneMove({
     ...feedbackMessages,
   ];
 
-  const { response, toolUse, usage } = await runStructuredCall({
+  const { response, toolUse, usage, web_searches } = await runStructuredCall({
     client,
     model,
     budget,
@@ -169,6 +169,13 @@ async function emitOneMove({
     tools: [webSearchTool({ maxUses: 2 }), EMIT_MOVE_TOOL],
     forceTool: 'emit_move',
   });
+
+  for (const search of web_searches || []) {
+    await appendLog(idea.id, logFile, {
+      kind: 'web_search',
+      payload: { persona_id: persona.id, ...search },
+    });
+  }
 
   await appendLog(idea.id, logFile, {
     kind: 'response',

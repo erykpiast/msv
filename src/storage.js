@@ -60,15 +60,27 @@ async function ensureIdeaDirs(id) {
   await fs.mkdir(ideaLogsDir(id), { recursive: true });
 }
 
-async function atomicWriteJson(filePath, data) {
+async function atomicWriteText(filePath, text) {
   const dir = path.dirname(filePath);
   const tmpPath = path.join(
     dir,
     `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`
   );
+  try {
+    // flag: 'wx' = exclusive create — refuses to write through a pre-placed
+    // symlink or to overwrite an existing file at the tmp path. Defence in
+    // depth against a symlink-redirect attack on shared filesystems.
+    await fs.writeFile(tmpPath, text, { encoding: 'utf8', flag: 'wx' });
+    await fs.rename(tmpPath, filePath);
+  } catch (err) {
+    await fs.rm(tmpPath, { force: true });
+    throw err;
+  }
+}
+
+async function atomicWriteJson(filePath, data) {
   const serialized = `${JSON.stringify(data, null, 2)}\n`;
-  await fs.writeFile(tmpPath, serialized, 'utf8');
-  await fs.rename(tmpPath, filePath);
+  await atomicWriteText(filePath, serialized);
 }
 
 async function readJsonFile(filePath) {
@@ -157,6 +169,25 @@ async function listIdeasByStatus(status) {
   return ideas.filter((idea) => idea.status === status);
 }
 
+async function listArchivedIdeas() {
+  await ensureStorageDirs();
+  const entries = await fs.readdir(ARCHIVE_DIR, { withFileTypes: true });
+  const dirs = entries.filter((entry) => entry.isDirectory());
+  const ideas = await Promise.all(
+    dirs.map(async (entry) => {
+      try {
+        return await readJsonFile(path.join(ARCHIVE_DIR, entry.name, 'index.json'));
+      } catch (err) {
+        if (err.code === 'ENOENT') return null;
+        throw err;
+      }
+    })
+  );
+  return ideas
+    .filter((idea) => idea !== null)
+    .sort((a, b) => (a.captured_at || '').localeCompare(b.captured_at || ''));
+}
+
 async function archiveIdea(id) {
   await fs.rename(ideaDir(id), archivedIdeaDir(id));
 }
@@ -182,6 +213,7 @@ module.exports = {
   ensureStorageDirs,
   ensureIdeaDirs,
   atomicWriteJson,
+  atomicWriteText,
   readJsonFile,
   freshInvestigation,
   createIdea,
@@ -189,6 +221,7 @@ module.exports = {
   readIdea,
   listIdeas,
   listIdeasByStatus,
+  listArchivedIdeas,
   archiveIdea,
   appendLog,
   readLog,

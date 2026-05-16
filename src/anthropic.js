@@ -49,6 +49,29 @@ function extractToolUse(response, toolName) {
   return blocks.find((block) => block.type === 'tool_use' && block.name === toolName) || null;
 }
 
+function extractWebSearches(response) {
+  const blocks = response?.content || [];
+  const searches = [];
+  let pending = null;
+  for (const block of blocks) {
+    if (block.type === 'server_tool_use' && block.name === 'web_search') {
+      if (pending) searches.push(pending);
+      pending = { query: block.input?.query || '', results: [] };
+    } else if (block.type === 'web_search_tool_result' && pending) {
+      const content = Array.isArray(block.content) ? block.content : [];
+      pending.results = content
+        .filter((r) => r.type === 'web_search_result')
+        .map((r) => ({
+          title: r.title || '',
+          url: r.url || '',
+          page_age: r.page_age ?? null,
+        }));
+    }
+  }
+  if (pending) searches.push(pending);
+  return searches;
+}
+
 function tokenUsage(response) {
   const usage = response?.usage || {};
   const input = (usage.input_tokens || 0) + (usage.cache_read_input_tokens || 0);
@@ -100,6 +123,8 @@ async function runStructuredCall({
     budget.used_total_tokens = (budget.used_total_tokens || 0) + usage.total;
   }
 
+  const web_searches = extractWebSearches(response);
+
   if (forceTool) {
     const toolUse = extractToolUse(response, forceTool);
     if (!toolUse) {
@@ -107,10 +132,10 @@ async function runStructuredCall({
         `Expected forced tool call \`${forceTool}\`; got stop_reason=${response.stop_reason}`
       );
     }
-    return { response, toolUse, usage };
+    return { response, toolUse, usage, web_searches };
   }
 
-  return { response, usage };
+  return { response, usage, web_searches };
 }
 
 module.exports = {
@@ -119,6 +144,7 @@ module.exports = {
   withRetries,
   webSearchTool,
   extractToolUse,
+  extractWebSearches,
   tokenUsage,
   runStructuredCall,
 };

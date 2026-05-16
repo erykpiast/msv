@@ -18,6 +18,7 @@ const {
   archiveIdea,
   archivedIdeaDir,
   atomicWriteJson,
+  atomicWriteText,
   createIdea,
   ensureStorageDirs,
   ideaDir,
@@ -86,6 +87,82 @@ test('atomicWriteJson writes JSON file atomically', async () => {
     const parsed = await readJsonFile(filePath);
     assert.deepEqual(parsed, payload);
   } finally {
+    await fsp.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('atomicWriteText writes and renames atomically', async () => {
+  const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'msv-text-'));
+  const filePath = path.join(tempDir, 'out.html');
+
+  try {
+    await atomicWriteText(filePath, '<!doctype html>\n');
+    const content = await fsp.readFile(filePath, 'utf8');
+    assert.equal(content, '<!doctype html>\n');
+  } finally {
+    await fsp.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('atomicWriteText leaves prior content intact when writeFile throws before any bytes hit disk', async () => {
+  const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'msv-text-err-'));
+  const filePath = path.join(tempDir, 'out.txt');
+  await fsp.writeFile(filePath, 'original\n', 'utf8');
+
+  const storageFsp = require('node:fs/promises');
+  const originalWriteFile = storageFsp.writeFile;
+  let capturedTmpPath;
+  // True write failure: throw immediately, without delegating to the real
+  // writeFile, so no bytes ever land at tmpPath. The cleanup path in
+  // atomicWriteText must still succeed (fs.rm with force ignores ENOENT).
+  storageFsp.writeFile = async (tmpPath) => {
+    capturedTmpPath = tmpPath;
+    throw new Error('simulated write failure');
+  };
+
+  try {
+    await assert.rejects(
+      () => atomicWriteText(filePath, 'replacement\n'),
+      /simulated write failure/
+    );
+    // Prior content intact.
+    const after = await fsp.readFile(filePath, 'utf8');
+    assert.equal(after, 'original\n');
+    // Tmp file was never created.
+    if (capturedTmpPath) {
+      await assert.rejects(() => fsp.stat(capturedTmpPath), /ENOENT/);
+    }
+  } finally {
+    storageFsp.writeFile = originalWriteFile;
+    await fsp.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('atomicWriteText cleans up tmp file when rename fails after partial write', async () => {
+  const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'msv-text-rename-err-'));
+  const filePath = path.join(tempDir, 'out.txt');
+  await fsp.writeFile(filePath, 'original\n', 'utf8');
+
+  const storageFsp = require('node:fs/promises');
+  const originalRename = storageFsp.rename;
+  let capturedTmpPath;
+  storageFsp.rename = async (from) => {
+    capturedTmpPath = from;
+    throw new Error('simulated rename failure');
+  };
+
+  try {
+    await assert.rejects(
+      () => atomicWriteText(filePath, 'replacement\n'),
+      /simulated rename failure/
+    );
+    const after = await fsp.readFile(filePath, 'utf8');
+    assert.equal(after, 'original\n');
+    if (capturedTmpPath) {
+      await assert.rejects(() => fsp.stat(capturedTmpPath), /ENOENT/);
+    }
+  } finally {
+    storageFsp.rename = originalRename;
     await fsp.rm(tempDir, { recursive: true, force: true });
   }
 });
