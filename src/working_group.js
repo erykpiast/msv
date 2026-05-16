@@ -149,6 +149,7 @@ async function runWorkingGroup({
   budget,
   territory,
   personas,
+  onProgress,
 }) {
   const territoryId = territoryKey(territory);
   const safeTerritoryId = safeSlug(territoryId);
@@ -156,6 +157,9 @@ async function runWorkingGroup({
   const pairPersonas = assignedPair
     .map((pid) => personas.find((p) => p.id === pid))
     .filter(Boolean);
+  const emit = (msg) => {
+    if (onProgress) onProgress(`[${safeTerritoryId}] ${msg}`);
+  };
 
   // Persist the safe slug as territory_id so all downstream consumers (inspect
   // builder, log filenames, anchor IDs in the SPA) work from the same sanitised
@@ -173,6 +177,7 @@ async function runWorkingGroup({
   };
 
   // --- 5.4a Independent Ideation ---
+  emit('ideation start');
   const ideationLog = `pair-${safeTerritoryId}-ideation`;
   const ideation = await withRetry(
     () =>
@@ -195,6 +200,7 @@ async function runWorkingGroup({
       kind: 'abort',
       payload: { reason: ideation.retryError.message, first_error: ideation.firstError.message },
     });
+    emit(`ideation failed: ${ideation.retryError.message}`);
     return result;
   }
   const ideationResults = ideation.value;
@@ -211,7 +217,10 @@ async function runWorkingGroup({
     }
   }
 
+  emit(`ideation done (${result.candidate_questions.length} candidates)`);
+
   // --- 5.4b Adversarial Pre-check ---
+  emit('adversarial pre-check start');
   const adversarialLog = `pair-${safeTerritoryId}-adversarial`;
   try {
     const adversarialResults = await Promise.all(
@@ -239,9 +248,12 @@ async function runWorkingGroup({
       kind: 'partial_failure',
       payload: { reason: err.message },
     });
+    emit(`adversarial partial failure: ${err.message}`);
   }
+  emit(`adversarial done (${result.adversarial_marks.length} marks)`);
 
   // --- 5.4c Alignment Debate ---
+  emit('alignment debate start');
   const alignmentLog = `pair-${safeTerritoryId}-alignment`;
   let alignmentMoveCount = 0;
   let alignmentHistory = [];
@@ -304,12 +316,18 @@ async function runWorkingGroup({
     personas: pairPersonas,
   });
 
+  emit(
+    `alignment done (${alignmentMoveCount} moves, ${result.aligned_questions.length} aligned)`
+  );
+
   if (result.aligned_questions.length < 2) {
     result.terminated_by = 'alignment_failure';
+    emit('alignment failure (too few aligned questions)');
     return result;
   }
 
   // --- 5.4d Researcher Delegation ---
+  emit(`researcher start (${result.aligned_questions.length} questions)`);
   // Stream researcher results: each aligned-question researcher runs concurrently
   // but each one's result is processed as it arrives, so a slow researcher cannot
   // block the synchronous shape-assignment loop. Final shape preserves order
@@ -366,8 +384,12 @@ async function runWorkingGroup({
   }
 
   const usefulReports = result.researcher_reports.filter((r) => r.findings.length > 0);
+  emit(
+    `researcher done (${result.researcher_reports.length} reports, ${usefulReports.length} with findings)`
+  );
   if (usefulReports.length === 0) {
     result.terminated_by = 'all_dead_end';
+    emit('all researchers dead-ended');
     return result;
   }
 
@@ -375,6 +397,7 @@ async function runWorkingGroup({
   const allFindings = result.researcher_reports.flatMap((r) => r.findings);
 
   // --- 5.4e Independent Observation ---
+  emit('observation start');
   const observationLog = `pair-${safeTerritoryId}-observation`;
   let obsCounter = 0;
 
@@ -444,7 +467,10 @@ async function runWorkingGroup({
     }
   }
 
+  emit(`observation done (${result.observations.length} observations)`);
+
   // --- 5.4f Pair Debate ---
+  emit('pair debate start');
   const debateLog = `pair-${safeTerritoryId}-debate`;
   let debateMoveCount = 0;
   let debateHistory = [];
@@ -589,6 +615,9 @@ async function runWorkingGroup({
   result.terminated_by = detectConcessionTermination(debateHistory)
     ? 'mutual_concession'
     : 'budget_exhausted';
+  emit(
+    `debate done (${debateMoveCount} moves, ${result.surviving_claims.length} claims, ${result.terminated_by})`
+  );
 
   return result;
 }

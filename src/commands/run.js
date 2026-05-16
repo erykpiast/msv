@@ -36,6 +36,22 @@ function progress(line) {
   process.stdout.write(`${line}\n`);
 }
 
+// Print "...still working (Ns)" every HEARTBEAT_MS while fn is in flight so
+// long stages (web_search, model calls) don't look stuck.
+const HEARTBEAT_MS = 15000;
+async function withHeartbeat(label, fn) {
+  const start = Date.now();
+  const timer = setInterval(() => {
+    const seconds = Math.round((Date.now() - start) / 1000);
+    process.stdout.write(`→      [${label}] …still working (${seconds}s)\n`);
+  }, HEARTBEAT_MS);
+  try {
+    return await fn();
+  } finally {
+    clearInterval(timer);
+  }
+}
+
 async function ensureConfirmation(idea) {
   if (idea.status !== 'ready') return true;
   const rl = readline.createInterface({ input: stdin, output: stdout });
@@ -68,6 +84,7 @@ async function runWorkingGroupsConcurrently({ client, idea, inv, personas, terri
         budget: inv.budget,
         territory,
         personas,
+        onProgress: (msg) => progress(`→      ${msg}`),
       })
     )
   );
@@ -114,12 +131,15 @@ async function runPipeline(idea, client) {
   const id = idea.id;
 
   progress(`→ ${id} [1/7] perspective discovery (interrogative posture)…`);
-  const discovery = await runPerspectiveDiscovery({
-    client,
-    idea,
-    model: inv.model,
-    budget: inv.budget,
-  });
+  const discovery = await withHeartbeat('discovery', () =>
+    runPerspectiveDiscovery({
+      client,
+      idea,
+      model: inv.model,
+      budget: inv.budget,
+      onProgress: (msg) => progress(`→      ${msg}`),
+    })
+  );
   inv.perspective_discovery.search_queries = discovery.search_queries;
   inv.perspective_discovery.candidate_personas = discovery.candidate_personas;
   progress(
@@ -140,13 +160,15 @@ async function runPipeline(idea, client) {
   await writeIdea(idea);
 
   progress(`→ ${id} [3/7] coordinator decomposing into territories…`);
-  const initialDecomposition = await runCoordinatorInitial({
-    client,
-    idea,
-    model: inv.model,
-    budget: inv.budget,
-    personas,
-  });
+  const initialDecomposition = await withHeartbeat('coordinator', () =>
+    runCoordinatorInitial({
+      client,
+      idea,
+      model: inv.model,
+      budget: inv.budget,
+      personas,
+    })
+  );
   const territories = initialDecomposition.territories || initialDecomposition.sub_questions || [];
   inv.coordinator_decisions.initial = {
     decided_at: initialDecomposition.decided_at,
@@ -159,13 +181,15 @@ async function runPipeline(idea, client) {
   progress(
     `→ ${id} [4/7] working groups (${territories.length} parallel pairs · six sub-stages each)…`
   );
-  const workingGroups = await runWorkingGroupsConcurrently({
-    client,
-    idea,
-    inv,
-    personas,
-    territories,
-  });
+  const workingGroups = await withHeartbeat('working-groups', () =>
+    runWorkingGroupsConcurrently({
+      client,
+      idea,
+      inv,
+      personas,
+      territories,
+    })
+  );
   inv.pair_debates.push(...workingGroups);
   await writeIdea(idea);
 
@@ -182,7 +206,8 @@ async function runPipeline(idea, client) {
   if (livePairs.length >= 2) {
     const assignment = selectReactorPermutation(livePairs, personas);
 
-    const perPairReactions = await Promise.all(
+    const perPairReactions = await withHeartbeat('cross-pollination', () =>
+      Promise.all(
       livePairs.map(async (targetPair, i) => {
         const reactorIdx = assignment[i];
         if (reactorIdx == null || reactorIdx < 0) return [];
@@ -216,6 +241,7 @@ async function runPipeline(idea, client) {
           )
         );
       })
+      )
     );
 
     const claimMap = new Map();
@@ -253,14 +279,16 @@ async function runPipeline(idea, client) {
   }
 
   progress(`→ ${id} [6/7] forum aggregation…`);
-  const forum = await aggregateForum({
-    client,
-    idea,
-    model: inv.model,
-    budget: inv.budget,
-    pairDebates: inv.pair_debates,
-    crossPollination: inv.cross_pollination,
-  });
+  const forum = await withHeartbeat('forum', () =>
+    aggregateForum({
+      client,
+      idea,
+      model: inv.model,
+      budget: inv.budget,
+      pairDebates: inv.pair_debates,
+      crossPollination: inv.cross_pollination,
+    })
+  );
   inv.forum = forum;
   const contradictionCount = forum.nodes.filter((n) => n.contradiction_with_node_id).length;
   const deadEndCount = (forum.dead_end_questions || []).length;
@@ -270,15 +298,17 @@ async function runPipeline(idea, client) {
   await writeIdea(idea);
 
   progress(`→ ${id} [7/7] synthesis (haiku)…`);
-  const synthesis = await runSynthesizer({
-    client,
-    idea,
-    model: inv.synthesizer_model,
-    budget: inv.budget,
-    forum,
-    personas,
-    pairDebates: inv.pair_debates,
-  });
+  const synthesis = await withHeartbeat('synthesis', () =>
+    runSynthesizer({
+      client,
+      idea,
+      model: inv.synthesizer_model,
+      budget: inv.budget,
+      forum,
+      personas,
+      pairDebates: inv.pair_debates,
+    })
+  );
   inv.synthesis = {
     produced_at: synthesis.produced_at,
     report: synthesis.report,
