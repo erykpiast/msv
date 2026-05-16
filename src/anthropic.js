@@ -7,8 +7,12 @@ const { MODEL, SYNTHESIZER_MODEL } = require('./models');
 // for ages (observed in production: one orphaned promise pinned the pipeline
 // for 15+ minutes with 0% CPU and zero open sockets). 60s comfortably covers
 // real model latency including web_search; anything longer is almost certainly
-// a hang the queue-level watchdog should then surface.
+// a hang the queue-level watchdog should then surface. Heavier single calls
+// (synthesizer over the full forum) pass an explicit timeoutMs to runStructuredCall.
 const SDK_REQUEST_TIMEOUT_MS = 60_000;
+// Slack between SDK timeout and the queue-level backstop, mirroring the
+// PER_ATTEMPT_TIMEOUT_MS = 75_000 default in api_queue.js (60s + 15s).
+const ATTEMPT_BACKSTOP_BUFFER_MS = 15_000;
 
 function createClient() {
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -88,6 +92,7 @@ async function runStructuredCall({
   model = MODEL,
   maxTokens = 2400,
   budget,
+  timeoutMs = SDK_REQUEST_TIMEOUT_MS,
 }) {
   if (!client) throw new Error('client is required');
   if (!Array.isArray(messages) || messages.length === 0) {
@@ -105,7 +110,15 @@ async function runStructuredCall({
     params.tool_choice = { type: 'tool', name: forceTool };
   }
 
-  const response = await apiQueue.enqueue(() => client.messages.create(params));
+  // Per-request SDK timeout overrides the client default. The queue-level
+  // per-attempt backstop and wall-clock cap track it so a longer SDK timeout
+  // isn't strangled by a shorter queue cap.
+  const perAttemptTimeoutMs = timeoutMs + ATTEMPT_BACKSTOP_BUFFER_MS;
+  const wallClockMaxMs = timeoutMs + 30_000;
+  const response = await apiQueue.enqueue(
+    () => client.messages.create(params, { timeout: timeoutMs }),
+    { perAttemptTimeoutMs, wallClockMaxMs }
+  );
   const usage = tokenUsage(response);
   if (budget) {
     budget.used_executor_calls = (budget.used_executor_calls || 0) + 1;

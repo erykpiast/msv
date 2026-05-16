@@ -140,6 +140,10 @@ async function runSynthesizer({ client, idea, model, budget, forum, personas, pa
     ],
     tools: [EMIT_SYNTHESIS_TOOL],
     forceTool: 'emit_synthesis',
+    // The synthesizer consumes the full forum, persona roster, and question
+    // landscape in one shot, then emits a 5k-token tool call. Observed wall-clock
+    // is 60–120s; the default 60s SDK cap was timing out on rich investigations.
+    timeoutMs: 180_000,
   });
 
   const payload = toolUse.input;

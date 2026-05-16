@@ -100,6 +100,32 @@ async function readJsonFile(filePath) {
   return JSON.parse(content);
 }
 
+/**
+ * Returns the initial (empty) investigation object for a new idea.
+ *
+ * Resumption fields (see specs/feat-investigation-resumption.md §8.2):
+ *   progress      – null until runPipeline starts; thereafter:
+ *                     {
+ *                       current_stage: '1_discovery' | '2_diversity' |
+ *                                      '3_coordinator' | '4_working_groups' |
+ *                                      '5_cross_pollination' | '6_forum' |
+ *                                      '7_synthesis' | 'complete',
+ *                       working_groups: { [territoryId: string]: SubStageProgressValue }
+ *                     }
+ *                   where SubStageProgressValue is one of: 'pending',
+ *                   'ideation_complete', 'adversarial_complete',
+ *                   'alignment_complete', 'researcher_complete',
+ *                   'observation_complete', 'debate_complete', 'complete'.
+ *   last_failure  – null on success; on failure:
+ *                     {
+ *                       reason: 'anthropic_unavailable' | 'user_cancelled' | 'internal_error',
+ *                       stage:  <current_stage value>,
+ *                       territory_id: <slug> | null,
+ *                       sub_stage:    'ideation' | 'adversarial' | ... | 'debate' | null,
+ *                       error_message: <sanitised single-line message>,
+ *                       occurred_at:   <ISO 8601>
+ *                     }
+ */
 function freshInvestigation() {
   return {
     schema_version: 'v5',
@@ -125,6 +151,8 @@ function freshInvestigation() {
       dead_end_questions: [],
     },
     synthesis: null,
+    progress: null,
+    last_failure: null,
   };
 }
 
@@ -135,12 +163,20 @@ function freshInvestigation() {
 // in a partial migration or hand-edit. Falls back to v4 only when no signal exists.
 function normalizeLoadedIdea(idea) {
   const inv = idea?.investigation;
-  if (!inv || inv.schema_version) return idea;
-  const firstDebate = Array.isArray(inv.pair_debates) ? inv.pair_debates[0] : null;
-  const hasV5Marker =
-    firstDebate?.territory_id != null ||
-    Array.isArray(inv.coordinator_decisions?.initial?.territories);
-  inv.schema_version = hasV5Marker ? 'v5' : 'v4';
+  if (!inv) return idea;
+  // Ensure resumption fields exist at well-known keys with null defaults so
+  // downstream code can read inv.progress without optional-chaining each time.
+  // Ideas written by older code have both null; planResume treats that as "no
+  // resume anchor" and falls back to fresh-run.
+  if (!('progress' in inv)) inv.progress = null;
+  if (!('last_failure' in inv)) inv.last_failure = null;
+  if (!inv.schema_version) {
+    const firstDebate = Array.isArray(inv.pair_debates) ? inv.pair_debates[0] : null;
+    const hasV5Marker =
+      firstDebate?.territory_id != null ||
+      Array.isArray(inv.coordinator_decisions?.initial?.territories);
+    inv.schema_version = hasV5Marker ? 'v5' : 'v4';
+  }
   return idea;
 }
 
@@ -254,6 +290,42 @@ async function readLog(id, name) {
     .map((line) => JSON.parse(line));
 }
 
+// Per-idea async mutex that serialises concurrent read-modify-write operations
+// on index.json. Without this, two concurrent working-group checkpoint callbacks
+// can both observe findIndex === -1 and both append, duplicating entries.
+//
+// Use this when multiple concurrent async tasks may mutate + write the same idea
+// (e.g. working-group checkpoint callbacks under Promise.allSettled). Callers
+// that run only one writer at a time (the top-level runPipeline stages) may call
+// writeIdea directly without going through the mutex.
+//
+// Each caller stores its own `next` (its release signal) in the map and replaces
+// the previous entry. The chain is built by each new caller capturing the prior
+// `next` from the map and awaiting it. The cleanup predicate compares against
+// the same `next` we stored, so only the last caller in the chain deletes the
+// map entry — otherwise the map would grow by one entry per processed idea.
+const _ideaMutexes = new Map();
+async function ideaWriteMutex(id, fn) {
+  const prev = _ideaMutexes.get(id) || Promise.resolve();
+  let resolveNext;
+  const next = new Promise((r) => {
+    resolveNext = r;
+  });
+  _ideaMutexes.set(id, next);
+  await prev;
+  try {
+    return await fn();
+  } finally {
+    resolveNext();
+    if (_ideaMutexes.get(id) === next) _ideaMutexes.delete(id);
+  }
+}
+
+// Test-only: number of live mutex entries. Used to verify the cleanup predicate.
+function _ideaMutexSize() {
+  return _ideaMutexes.size;
+}
+
 module.exports = {
   ROOT_DIR,
   IDEAS_DIR,
@@ -282,4 +354,6 @@ module.exports = {
   ideaLogsDir,
   ideaLogPath,
   archivedIdeaDir,
+  ideaWriteMutex,
+  _ideaMutexSize,
 };

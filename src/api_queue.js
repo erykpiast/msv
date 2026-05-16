@@ -101,27 +101,27 @@ function runWithAttemptTimeout(fn, ms) {
   });
 }
 
-async function runWithRetries(fn, startedAt) {
+async function runWithRetries(fn, startedAt, perAttemptTimeoutMs, wallClockMaxMs) {
   let lastError;
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt += 1) {
     try {
-      return await runWithAttemptTimeout(fn, PER_ATTEMPT_TIMEOUT_MS);
+      return await runWithAttemptTimeout(fn, perAttemptTimeoutMs);
     } catch (error) {
       lastError = error;
       if (!isRetryable(error) || attempt === MAX_RETRIES) {
         throw error;
       }
       const elapsed = Date.now() - startedAt;
-      if (elapsed >= CALL_WALL_CLOCK_MAX_MS) {
+      if (elapsed >= wallClockMaxMs) {
         // Surface a hard error rather than continue stalling the queue.
         const stallError = new Error(
-          `API call exceeded wall-clock cap (${CALL_WALL_CLOCK_MAX_MS}ms) after ${attempt} retries: ${error.message}`
+          `API call exceeded wall-clock cap (${wallClockMaxMs}ms) after ${attempt} retries: ${error.message}`
         );
         stallError.cause = error;
         throw stallError;
       }
       retried += 1;
-      const wait = Math.min(retryAfterMs(error, attempt), CALL_WALL_CLOCK_MAX_MS - elapsed);
+      const wait = Math.min(retryAfterMs(error, attempt), wallClockMaxMs - elapsed);
       await sleep(Math.max(0, wait));
     }
   }
@@ -156,14 +156,21 @@ async function acquireSlot() {
 /**
  * Enqueue an API call thunk. Handles bounded concurrency and retry/backoff.
  *
+ * Callers with unusually heavy single calls (e.g. the synthesizer, which
+ * consumes the full forum) can raise the limits via options; otherwise the
+ * defaults tuned for working-group calls apply.
+ *
  * @param {() => Promise<any>} fn - Thunk wrapping a messages.create call.
+ * @param {{ perAttemptTimeoutMs?: number, wallClockMaxMs?: number }} [options]
  * @returns {Promise<any>}
  */
-async function enqueue(fn) {
+async function enqueue(fn, options = {}) {
+  const perAttemptTimeoutMs = options.perAttemptTimeoutMs ?? PER_ATTEMPT_TIMEOUT_MS;
+  const wallClockMaxMs = options.wallClockMaxMs ?? CALL_WALL_CLOCK_MAX_MS;
   await acquireSlot();
   const startedAt = Date.now();
   try {
-    const result = await runWithRetries(fn, startedAt);
+    const result = await runWithRetries(fn, startedAt, perAttemptTimeoutMs, wallClockMaxMs);
     completed += 1;
     return result;
   } finally {

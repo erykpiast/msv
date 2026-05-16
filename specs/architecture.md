@@ -552,7 +552,7 @@ Per-sub-stage log files inside the pair scope keep raw API exchanges debuggable.
 
 **index.json grows.** Where v4's `index.json` was 50–200 KB, v5's lands at 200 KB – 1 MB per idea due to the researcher reports, observations, and richer move metadata. Still small relative to the log volume.
 
-**No resumability.** Same as v4 — re-running from scratch is the recovery path. A failed run leaves partial state in `index.json` and partial log files; the user reads them and decides whether to retry.
+**Resumability.** `msv run <id>` auto-detects an interrupted run and resumes from the last checkpoint. Checkpoints are written after each macro stage (1–7) and after each sub-stage within stage 4 (working groups). A typed `last_failure` record (`anthropic_unavailable`, `user_cancelled`, `internal_error`) is persisted on failure so the CLI can show actionable messaging. Use `--restart` to force a clean re-run, archiving prior logs under `.attempts/<timestamp>/`. See `specs/feat-investigation-resumption.md` for the full design.
 
 **Status state machine.** Unchanged: `pending` → `investigating` → `ready` → `archived`. The `[d]eeper` follow-up mechanism is unchanged.
 
@@ -601,7 +601,7 @@ Two new modules: `src/agents/researcher.js` (Joint Researcher implementation) an
 - **All artifacts append, nothing mutates.** Unchanged from v4. The expanded artifact set (candidate questions, adversarial marks, researcher reports, observations, surface-area log) follows the same discipline.
 - **No mid-run steering.** Unchanged from v4. The user has exactly one steering surface — the topic pitch.
 - **No spawn round.** The coordinator runs once. The working-group internal flow absorbs question generation. Strictly feed-forward outside working groups.
-- **No resumability.** Unchanged from v4.
+- **Resumability via sub-stage checkpoints.** `msv run <id>` resumes from the last persisted checkpoint. See `specs/feat-investigation-resumption.md`.
 - **Tool-use forced output for all persona moves.** Unchanged from v4. `emit_move`, `emit_reaction`, and now `emit_candidate_question`, `emit_adversarial_mark`, `emit_alignment_move`, `emit_observation`. Free-form JSON parsing remains out of the hot path.
 - **Surface-area log is record-only.** v5 records the predicted-vs-actual gap per aligned question but does not act on it. Future versions may use it to retrospectively rank question quality or to feed the coordinator's next-run priors. Recording it now costs almost nothing and enables that future.
 - **It's okay to use more tokens.** ~200–250k tokens per run (up from 70–100k), ~$5–10 (up from $1–3), 3–10 minutes wall time (up from 1–3). This is a deliberate trade for question depth and citation quality.
