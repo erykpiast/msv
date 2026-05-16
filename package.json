@@ -15,7 +15,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.96.0",
-    "ink": "^5.2.1",
+    "ink": "^6.8.0",
     "ink-spinner": "^5.0.0",
     "react": "^19.2.6",
     "uuid": "11.1.1"
@@ -29,7 +29,7 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.2",
     "@xyflow/react": "^12.10.2",
-    "react-devtools-core": "^4.28.5",
+    "react-devtools-core": "^7.0.1",
     "react-dom": "^19.2.6",
     "react-markdown": "^10.1.0",
     "recharts": "^3.8.1",
