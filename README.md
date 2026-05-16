@@ -47,6 +47,30 @@ msv run 8db8e9bf-5cb7-4fda-a2a8-9796b0511f9d
 
 On failure the idea is left in `investigating` state. To retry, hand-edit `~/.msv/ideas/<id>/index.json`: set `status` back to `"pending"`, clear `investigation.completed_at`, then re-run `msv run <id>`.
 
+### `msv inspect <id>`
+
+Boots a local Vite dev server with a React SPA showing the full transcript of an investigation: the search queries discovery ran, every candidate persona (selected and cut), the coordinator's decomposition, every debate move with confidence and `evidence_basis`, the forum graph with contradiction edges, and the synthesis.
+
+```bash
+msv inspect 722b7e3c-e231-46c8-84cd-b2f272222323
+msv inspect <id> --no-open    # don't open the browser; print URL only
+msv inspect <id> --port 6000  # pin the port
+```
+
+The terminal stays attached until Ctrl-C. Editing files under `src/inspect-app/` triggers Vite HMR — the browser updates instantly. Data is read once at mount; re-run `msv inspect <id>` to refresh after a new `msv run`.
+
+Each invocation regenerates `inspect-view.json` next to `index.json` in the idea directory. The file is `.gitignore`d and safe to delete — it always rebuilds from `index.json` + `logs/*.jsonl`.
+
+#### Where things live (`src/inspect-app/`)
+
+- `App.tsx` — Mantine `<AppShell>` layout, mounts every section
+- `components/{Header,Timeline,Discovery,Coordinator,Debate,Forum,Synthesis}/` — one folder per section
+- `theme/personas.ts` — Okabe-Ito palette + deterministic id-to-colour hash. Import `personaColor(id)` everywhere.
+- `hooks/useView.ts` — fetches `/inspect-view.json` once at mount via `use(promise)`
+- Mantine handles layout primitives; Emotion's `css` prop for custom one-off styles. No Tailwind.
+
+The CLI side (`src/inspect/`) is plain JavaScript: `loader/` reads `index.json` + `logs/*.jsonl`, `view/build.js` derives the `InvestigationView` shape, `server.js` boots Vite with a `/inspect-view.json` middleware that streams the rebuilt view to the browser.
+
 ### `msv review`
 
 Shows ready investigations one at a time with a steer card. Actions:
@@ -55,6 +79,7 @@ Shows ready investigations one at a time with a steer card. Actions:
 - `[d]` deeper — spawn a follow-up idea, archive the current one
 - `[k]` kill / archive
 - `[n]` add steer notes
+- `[i]` inspect — boot the visual transcript for this idea
 
 ```bash
 msv review

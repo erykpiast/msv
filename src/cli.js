@@ -1,6 +1,7 @@
 const { runAddCommand } = require('./commands/add');
 const { runRunCommand } = require('./commands/run');
 const { runReviewCommand } = require('./commands/review');
+const { runInspectCommand } = require('./commands/inspect');
 
 const HELP_TEXT = `msv <command> [options]
 
@@ -9,6 +10,7 @@ Commands:
   run --all          Run the investigation pipeline on every pending idea
   run <id>           Run the investigation pipeline on a single idea
   review             Step through ready investigations one at a time
+  inspect <id>       Boot the local visual inspector for an investigation
 `;
 
 async function main(argv = process.argv.slice(2)) {
@@ -31,6 +33,11 @@ async function main(argv = process.argv.slice(2)) {
 
   if (command === 'review') {
     await runReviewCommand();
+    return;
+  }
+
+  if (command === 'inspect') {
+    await runInspectCommand(args);
     return;
   }
 

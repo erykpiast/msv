@@ -8,6 +8,7 @@ const {
   writeIdea,
 } = require('../storage');
 const { renderSteerCard, renderSynthesis } = require('../render');
+const { runInspectCommand } = require('./inspect');
 
 function clearScreen() {
   process.stdout.write('\x1B[2J\x1B[0f');
@@ -78,6 +79,18 @@ async function steerLoop(rl, idea) {
       continue;
     }
 
+    if (action === 'i') {
+      process.stdout.write(`booting msv inspect ${idea.id} — Ctrl-C to return\n`);
+      try {
+        await runInspectCommand([idea.id]);
+      } catch (err) {
+        process.stdout.write(`inspect failed: ${err.message}\n`);
+      }
+      clearScreen();
+      process.stdout.write(`${renderSteerCard(idea)}\n`);
+      continue;
+    }
+
     if (action === 'd') {
       const topic = (await rl.question('refined topic: ')).trim();
       if (!topic) {
@@ -95,7 +108,7 @@ async function steerLoop(rl, idea) {
       return { action: 'deeper', followUpId: followUp.id };
     }
 
-    process.stdout.write('unknown action. [r]ead [d]eeper [k]ill [n]otes\n');
+    process.stdout.write('unknown action. [r]ead [d]eeper [k]ill [n]otes [i]nspect\n');
   }
 }
 
