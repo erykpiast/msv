@@ -67,7 +67,7 @@ Six sub-stages, fanned out across pairs. Every event carries a `territory_id` co
 
 | Event | Payload (core) | When emitted |
 |---|---|---|
-| `cross_pollination.reaction` | `{ persona_id, target_territory_id, claim_id, type, confidence }` | After each accepted reaction |
+| `cross_pollination.reaction` | `{ persona_id, reactor_territory, target_territory, references_claim_id, type, confidence }` (`type` ∈ Rebut / Concede / Question) | After each accepted reaction |
 | `cross_pollination.done` | `{ reaction_count }` | End of stage |
 
 ## Forum (stage 6)

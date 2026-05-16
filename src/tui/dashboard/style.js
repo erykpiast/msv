@@ -20,4 +20,13 @@ const STATUS_ICON = {
   pending: ' ',
 };
 
-module.exports = { COLORS, STATUS_ICON };
+// Cross-pollination reaction types (from REACTION_MOVE_TYPES in src/moves.js).
+// Colors picked so that Concede reads as "softening agreement", Rebut as
+// "pushback", Question as "uncertainty".
+const REACTION_COLORS = {
+  Concede: 'green',
+  Rebut: 'red',
+  Question: 'yellow',
+};
+
+module.exports = { COLORS, STATUS_ICON, REACTION_COLORS };

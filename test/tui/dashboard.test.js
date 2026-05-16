@@ -324,3 +324,57 @@ test('wg.end marks all substages as done', () => {
   assert.equal(wg.terminatedBy, 'mutual_concession');
   assert.equal(wg.claimCount, 3);
 });
+
+// --- cross-pollination flows ---
+
+test('cross_pollination.reaction buckets reactions by reactor→target with per-type counts', () => {
+  const state = applyEvents([
+    mkEvent('cross_pollination.reaction', {
+      persona_id: 'p_001', reactor_territory: 't_002', target_territory: 't_001',
+      type: 'Rebut', confidence: 7,
+    }),
+    mkEvent('cross_pollination.reaction', {
+      persona_id: 'p_002', reactor_territory: 't_002', target_territory: 't_001',
+      type: 'Rebut', confidence: 6,
+    }),
+    mkEvent('cross_pollination.reaction', {
+      persona_id: 'p_003', reactor_territory: 't_003', target_territory: 't_001',
+      type: 'Concede', confidence: 5,
+    }),
+    mkEvent('cross_pollination.reaction', {
+      persona_id: 'p_001', reactor_territory: 't_002', target_territory: 't_001',
+      type: 'Question', confidence: 4,
+    }),
+  ]);
+  assert.equal(state.crossPollination.total, 4);
+  const t2t1 = state.crossPollination.flows['t_002→t_001'];
+  assert.equal(t2t1.Rebut, 2);
+  assert.equal(t2t1.Question, 1);
+  assert.equal(t2t1.total, 3);
+  const t3t1 = state.crossPollination.flows['t_003→t_001'];
+  assert.equal(t3t1.Concede, 1);
+  assert.equal(t3t1.total, 1);
+});
+
+test('cross_pollination.reaction with missing territories falls back to "?"', () => {
+  const state = applyEvents([
+    mkEvent('cross_pollination.reaction', {
+      persona_id: 'p_001', type: 'Rebut', confidence: 7,
+    }),
+  ]);
+  assert.equal(state.crossPollination.total, 1);
+  assert.ok(state.crossPollination.flows['?→?']);
+});
+
+test('cross_pollination.done trusts emitter-supplied reaction_count', () => {
+  // If the recorder ever drops a reaction, the running total in state will be
+  // lower than the emitter's final count. The .done event takes precedence so
+  // the header doesn't under-report.
+  const state = applyEvents([
+    mkEvent('cross_pollination.reaction', {
+      reactor_territory: 't_002', target_territory: 't_001', type: 'Rebut',
+    }),
+    mkEvent('cross_pollination.done', { reaction_count: 12 }),
+  ]);
+  assert.equal(state.crossPollination.total, 12);
+});

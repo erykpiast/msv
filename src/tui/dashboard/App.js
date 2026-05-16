@@ -6,6 +6,7 @@ const { COLORS } = require('./style');
 const Header = require('./components/Header');
 const StageList = require('./components/StageList');
 const WorkingGroupGrid = require('./components/WorkingGroupGrid');
+const CrossPollination = require('./components/CrossPollination');
 const RecentEvents = require('./components/RecentEvents');
 
 function App({ initialState, registerSetState }) {
@@ -46,6 +47,7 @@ function App({ initialState, registerSetState }) {
     }),
     React.createElement(StageList, { stages: state.stages }),
     React.createElement(WorkingGroupGrid, { workingGroups: state.workingGroups }),
+    React.createElement(CrossPollination, { crossPollination: state.crossPollination }),
     React.createElement(RecentEvents, { recent: state.recent }),
     statusLine,
     React.createElement(Text, { color: COLORS.muted }, 'press q to quit')

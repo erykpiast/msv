@@ -473,9 +473,11 @@ async function runCrossPollinationReaction({
       });
       if (bus) bus.emit('cross_pollination.reaction', {
         persona_id: persona.id,
+        reactor_territory: reactingPair?.territory_id || null,
+        target_territory: targetTerritory || targetSubQuestion?.id || null,
         type: raw.type,
         references_claim_id: raw.references_claim_id,
-        target: targetTerritory || targetSubQuestion?.id || null,
+        confidence: Number(raw.confidence),
       });
       return {
         by_persona_id: persona.id,

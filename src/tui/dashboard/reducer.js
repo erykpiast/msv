@@ -19,6 +19,10 @@ function initialState({ idea }) {
     stages: {},
     currentStage: null,
     workingGroups: {},
+    // crossPollination.flows is keyed by "<reactor>→<target>"; each value
+    // counts reactions by type. Built incrementally as cross_pollination.reaction
+    // events arrive, finalised on cross_pollination.done.
+    crossPollination: { total: 0, flows: {} },
     api: { inflight: 0, queued: 0, total: 0, totalTokens: 0 },
     recent: [],
     startedAt: null,
@@ -349,6 +353,45 @@ function reduce(state, event) {
           }
           return { ...wg, substages, failed: true, failReason: event.reason };
         }),
+        recent,
+      };
+
+    case 'cross_pollination.reaction': {
+      // Some reactions may arrive with one or both territories null (defensive —
+      // older event payloads, or edge cases). Bucket those under "?" so they
+      // still count toward the total without crashing the renderer.
+      const reactor = event.reactor_territory || '?';
+      const target = event.target_territory || '?';
+      const key = `${reactor}→${target}`;
+      const prev = state.crossPollination.flows[key] || { reactor, target, total: 0 };
+      const type = event.type || 'Unknown';
+      return {
+        ...state,
+        crossPollination: {
+          total: state.crossPollination.total + 1,
+          flows: {
+            ...state.crossPollination.flows,
+            [key]: {
+              ...prev,
+              [type]: (prev[type] || 0) + 1,
+              total: prev.total + 1,
+            },
+          },
+        },
+        recent,
+      };
+    }
+
+    case 'cross_pollination.done':
+      // The total tracked from reactions and the event's reaction_count should
+      // agree; if they don't (e.g. reactions were dropped) we trust the explicit
+      // count from the emitter, which sees the final batch.
+      return {
+        ...state,
+        crossPollination: {
+          ...state.crossPollination,
+          total: event.reaction_count != null ? event.reaction_count : state.crossPollination.total,
+        },
         recent,
       };
 
