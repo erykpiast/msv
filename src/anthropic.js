@@ -2,13 +2,21 @@ const Anthropic = require('@anthropic-ai/sdk');
 const apiQueue = require('./api_queue');
 const { MODEL, SYNTHESIZER_MODEL } = require('./models');
 
+// Explicit per-request timeout for the SDK. The SDK default is 10 minutes,
+// which lets a single stalled call wedge the working-groups Promise.allSettled
+// for ages (observed in production: one orphaned promise pinned the pipeline
+// for 15+ minutes with 0% CPU and zero open sockets). 60s comfortably covers
+// real model latency including web_search; anything longer is almost certainly
+// a hang the queue-level watchdog should then surface.
+const SDK_REQUEST_TIMEOUT_MS = 60_000;
+
 function createClient() {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     throw new Error('ANTHROPIC_API_KEY is required');
   }
   const Ctor = Anthropic.default || Anthropic;
-  return new Ctor({ apiKey, maxRetries: 0 });
+  return new Ctor({ apiKey, maxRetries: 0, timeout: SDK_REQUEST_TIMEOUT_MS });
 }
 
 // withRetries kept for backward compat during v4 → v5 transition; new code
