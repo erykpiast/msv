@@ -1,0 +1,9 @@
+#!/usr/bin/env node
+
+const { main } = require('../src/cli');
+
+main().catch((error) => {
+  const message = error instanceof Error ? error.message : String(error);
+  process.stderr.write(`msv error: ${message}\n`);
+  process.exitCode = 1;
+});
