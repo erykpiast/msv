@@ -104,7 +104,7 @@ function renderDeadEnds(forum) {
     .join('\n');
 }
 
-async function runSynthesizer({ client, idea, model, budget, forum, personas, pairDebates = [] }) {
+async function runSynthesizer({ client, idea, model, budget, forum, personas, pairDebates = [], bus }) {
   const forumDump = renderForum(forum);
   const personaDump = renderPersonas(personas);
   const questionLandscape = renderQuestionLandscape(pairDebates);
@@ -156,6 +156,13 @@ async function runSynthesizer({ client, idea, model, budget, forum, personas, pa
       headline_count: (payload.headline_findings || []).length,
       report_chars: (payload.report || '').length,
     },
+  });
+
+  if (bus) bus.emit('synthesizer.done', {
+    headline_count: (payload.headline_findings || []).length,
+    tension_count: (payload.open_tensions || []).length,
+    has_question_landscape: !!(payload.question_landscape),
+    has_dead_end_summary: !!(payload.dead_end_summary),
   });
 
   return {

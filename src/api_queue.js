@@ -38,6 +38,13 @@ let inflight = 0;
 let queued = 0;
 let completed = 0;
 let retried = 0;
+let callCounter = 0;
+
+let busRef = null;
+
+function setBus(bus) {
+  busRef = bus;
+}
 
 const waiters = [];
 
@@ -93,15 +100,13 @@ function runWithAttemptTimeout(fn, ms) {
   });
   return Promise.race([callPromise, timeoutPromise]).finally(() => {
     clearTimeout(timer);
-    // If the call settles after the timeout fired, swallow its result/error so
-    // it doesn't surface as an unhandled rejection.
     if (timedOut) {
       callPromise.catch(() => {});
     }
   });
 }
 
-async function runWithRetries(fn, startedAt, perAttemptTimeoutMs, wallClockMaxMs) {
+async function runWithRetries(fn, startedAt, perAttemptTimeoutMs, wallClockMaxMs, callId) {
   let lastError;
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt += 1) {
     try {
@@ -113,7 +118,6 @@ async function runWithRetries(fn, startedAt, perAttemptTimeoutMs, wallClockMaxMs
       }
       const elapsed = Date.now() - startedAt;
       if (elapsed >= wallClockMaxMs) {
-        // Surface a hard error rather than continue stalling the queue.
         const stallError = new Error(
           `API call exceeded wall-clock cap (${wallClockMaxMs}ms) after ${attempt} retries: ${error.message}`
         );
@@ -122,6 +126,14 @@ async function runWithRetries(fn, startedAt, perAttemptTimeoutMs, wallClockMaxMs
       }
       retried += 1;
       const wait = Math.min(retryAfterMs(error, attempt), wallClockMaxMs - elapsed);
+      if (busRef) {
+        busRef.emit('api.call.retry', {
+          call_id: callId,
+          attempt,
+          reason: error?.message || String(error),
+          wait_ms: wait,
+        });
+      }
       await sleep(Math.max(0, wait));
     }
   }
@@ -161,21 +173,44 @@ async function acquireSlot() {
  * defaults tuned for working-group calls apply.
  *
  * @param {() => Promise<any>} fn - Thunk wrapping a messages.create call.
- * @param {{ perAttemptTimeoutMs?: number, wallClockMaxMs?: number }} [options]
+ * @param {{ perAttemptTimeoutMs?: number, wallClockMaxMs?: number, model?: string }} [options]
  * @returns {Promise<any>}
  */
 async function enqueue(fn, options = {}) {
   const perAttemptTimeoutMs = options.perAttemptTimeoutMs ?? PER_ATTEMPT_TIMEOUT_MS;
   const wallClockMaxMs = options.wallClockMaxMs ?? CALL_WALL_CLOCK_MAX_MS;
+  const { model } = options;
   await acquireSlot();
+  const callId = ++callCounter;
   const startedAt = Date.now();
+  if (busRef) busRef.emit('api.call.start', { call_id: callId, model });
   try {
-    const result = await runWithRetries(fn, startedAt, perAttemptTimeoutMs, wallClockMaxMs);
+    const result = await runWithRetries(fn, startedAt, perAttemptTimeoutMs, wallClockMaxMs, callId);
     completed += 1;
+    if (busRef) {
+      const usage = result?.usage || {};
+      busRef.emit('api.call.end', {
+        call_id: callId,
+        outcome: 'ok',
+        ms: Date.now() - startedAt,
+        input_tokens: usage.input_tokens || 0,
+        output_tokens: usage.output_tokens || 0,
+      });
+    }
     return result;
+  } catch (err) {
+    if (busRef) {
+      busRef.emit('api.call.end', {
+        call_id: callId,
+        outcome: 'failed',
+        ms: Date.now() - startedAt,
+        error_message: err?.message || String(err),
+      });
+    }
+    throw err;
   } finally {
     releaseSlot();
   }
 }
 
-module.exports = { enqueue, getStats };
+module.exports = { enqueue, getStats, setBus };

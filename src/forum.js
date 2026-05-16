@@ -152,7 +152,7 @@ async function judgeContradiction({ client, model, budget, idea, a, b }) {
   return result;
 }
 
-async function aggregateForum({ client, idea, model, budget, pairDebates, crossPollination }) {
+async function aggregateForum({ client, idea, model, budget, pairDebates, crossPollination, bus }) {
   const claimToNode = buildBaseNodes(pairDebates);
   attachReactions(claimToNode, crossPollination);
   const nodes = [...claimToNode.values()];
@@ -175,7 +175,14 @@ async function aggregateForum({ client, idea, model, budget, pairDebates, crossP
   const verdictByKey = new Map();
   const verdicts = await Promise.all(
     uniquePairs.map(([a, b]) =>
-      judgeContradiction({ client, model, budget, idea, a, b })
+      judgeContradiction({ client, model, budget, idea, a, b }).then((verdict) => {
+        if (bus) bus.emit('forum.contradiction.judged', {
+          node_a: a.node_id,
+          node_b: b.node_id,
+          contradicts: verdict.contradicts,
+        });
+        return verdict;
+      })
     )
   );
   uniquePairs.forEach(([a, b], index) => {
@@ -203,6 +210,12 @@ async function aggregateForum({ client, idea, model, budget, pairDebates, crossP
   });
 
   const deadEndQuestions = buildDeadEndQuestions(pairDebates);
+
+  if (bus) bus.emit('forum.done', {
+    node_count: nodes.length,
+    dead_end_count: deadEndQuestions.length,
+    contradiction_count: nodes.filter((n) => n.contradiction_with_node_id !== null).length,
+  });
 
   return {
     constructed_at: new Date().toISOString(),
