@@ -136,7 +136,14 @@ function reduce(state, event) {
           ...state.workingGroups,
           [event.territory_id]: {
             name: event.territory_name || event.territory_id,
+            assignedPair: event.assigned_pair || [],
             substages: makeSubstages(),
+            personasIdeated: 0,
+            candidateCount: 0,
+            markCount: 0,
+            alignmentMoves: 0,
+            debateMoves: 0,
+            observationCount: 0,
             researcherTotal: 0,
             researcherDone: 0,
             researcherActivity: null,
@@ -153,11 +160,23 @@ function reduce(state, event) {
         recent,
       };
 
+    case 'wg.ideation.persona.done':
+      return {
+        ...state,
+        workingGroups: updateWg(state.workingGroups, event.territory_id, (wg) => ({
+          ...wg,
+          personasIdeated: (wg.personasIdeated || 0) + 1,
+          candidateCount: (wg.candidateCount || 0) + (event.candidate_count || 0),
+        })),
+        recent,
+      };
+
     case 'wg.ideation.done':
       return {
         ...state,
         workingGroups: setSubstage(state.workingGroups, event.territory_id, 'ideation', 'done', {
           totalCandidates: event.total_candidates,
+          candidateCount: event.total_candidates,
         }),
         recent,
       };
@@ -172,7 +191,9 @@ function reduce(state, event) {
     case 'wg.adversarial.done':
       return {
         ...state,
-        workingGroups: setSubstage(state.workingGroups, event.territory_id, 'adversarial', 'done'),
+        workingGroups: setSubstage(state.workingGroups, event.territory_id, 'adversarial', 'done', {
+          markCount: event.mark_count || 0,
+        }),
         recent,
       };
 
@@ -186,7 +207,9 @@ function reduce(state, event) {
     case 'wg.alignment.done':
       return {
         ...state,
-        workingGroups: setSubstage(state.workingGroups, event.territory_id, 'alignment', 'done'),
+        workingGroups: setSubstage(state.workingGroups, event.territory_id, 'alignment', 'done', {
+          alignmentMoves: event.move_count || 0,
+        }),
         recent,
       };
 
@@ -260,7 +283,9 @@ function reduce(state, event) {
     case 'wg.observation.done':
       return {
         ...state,
-        workingGroups: setSubstage(state.workingGroups, event.territory_id, 'observation', 'done'),
+        workingGroups: setSubstage(state.workingGroups, event.territory_id, 'observation', 'done', {
+          observationCount: event.observation_count || 0,
+        }),
         recent,
       };
 
@@ -274,7 +299,9 @@ function reduce(state, event) {
     case 'wg.debate.done':
       return {
         ...state,
-        workingGroups: setSubstage(state.workingGroups, event.territory_id, 'debate', 'done'),
+        workingGroups: setSubstage(state.workingGroups, event.territory_id, 'debate', 'done', {
+          debateMoves: event.move_count || 0,
+        }),
         recent,
       };
 
@@ -284,6 +311,8 @@ function reduce(state, event) {
         workingGroups: updateWg(state.workingGroups, event.territory_id, (wg) => ({
           ...wg,
           moves: [...wg.moves, event].slice(-5),
+          alignmentMoves: event.phase === 'alignment' ? (wg.alignmentMoves || 0) + 1 : (wg.alignmentMoves || 0),
+          debateMoves: event.phase === 'debate' ? (wg.debateMoves || 0) + 1 : (wg.debateMoves || 0),
         })),
         recent,
       };

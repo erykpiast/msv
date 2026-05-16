@@ -5,14 +5,17 @@ const { getInk } = require('../inkExports');
 const { COLORS } = require('../style');
 const WorkingGroupCard = require('./WorkingGroupCard');
 
-function getColumns(terminalWidth) {
-  if (terminalWidth >= 160) return 3;
-  if (terminalWidth >= 100) return 2;
-  return 1;
+const CARD_WIDTH = WorkingGroupCard.CARD_WIDTH;
+// Each card sits in the row plus a gap; we use the rendered card width + the
+// `gap: 1` column to decide how many cards fit on one row.
+const COLUMN_STRIDE = CARD_WIDTH + 1;
+
+function columnsForWidth(terminalWidth) {
+  return Math.max(1, Math.floor(terminalWidth / COLUMN_STRIDE));
 }
 
 function WorkingGroupGrid({ workingGroups }) {
-  const { Box, Text, useStdout } = getInk();
+  const { Box, Text } = getInk();
   const { useState, useEffect } = React;
 
   const [termWidth, setTermWidth] = useState(
@@ -37,10 +40,7 @@ function WorkingGroupGrid({ workingGroups }) {
     );
   }
 
-  const cols = getColumns(termWidth);
-  const cardWidth = Math.floor((termWidth - cols * 2 - 2) / cols);
-
-  // Build rows of `cols` cards each
+  const cols = columnsForWidth(termWidth);
   const rows = [];
   for (let i = 0; i < entries.length; i += cols) {
     rows.push(entries.slice(i, i + cols));
@@ -53,13 +53,9 @@ function WorkingGroupGrid({ workingGroups }) {
     ...rows.map((rowEntries, rowIndex) =>
       React.createElement(
         Box,
-        { key: rowIndex, flexDirection: 'row', gap: 1, flexWrap: 'nowrap' },
+        { key: rowIndex, flexDirection: 'row', gap: 1 },
         ...rowEntries.map(([id, wg]) =>
-          React.createElement(WorkingGroupCard, {
-            key: id,
-            wg,
-            width: cardWidth,
-          })
+          React.createElement(WorkingGroupCard, { key: id, wg })
         )
       )
     )
