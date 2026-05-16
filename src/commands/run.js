@@ -14,6 +14,7 @@ const {
   ideaDir,
   ideaWriteMutex,
   safeSlug,
+  atomicWriteText,
 } = require('../storage');
 const { createClient, getStats } = require('../anthropic');
 const { MODEL, SYNTHESIZER_MODEL } = require('../models');
@@ -79,7 +80,7 @@ async function performRestart(idea) {
     if (err.code !== 'ENOENT') throw err;
   }
   const snapshot = `${JSON.stringify(idea, null, 2)}\n`;
-  await fs.writeFile(path.join(archiveRoot, 'index.json.before-restart'), snapshot, 'utf8');
+  await atomicWriteText(path.join(archiveRoot, 'index.json.before-restart'), snapshot);
   idea.investigation = freshInvestigation();
   idea.status = 'pending';
   await ensureIdeaDirs(idea.id);
@@ -98,6 +99,8 @@ async function checkpoint(idea, cancellationToken) {
 
 // Map each in-progress sub-stage value to the sub-stage name that was running when
 // the error occurred (i.e., the sub-stage that HADN'T YET checkpointed).
+// Inverse of SUBSTAGE_DONE_VALUE in working_group.js — keep both in sync when
+// adding or removing sub-stages.
 const NEXT_SUBSTAGE = {
   pending: 'ideation',
   ideation_complete: 'adversarial',
@@ -129,6 +132,19 @@ async function runWorkingGroupsConcurrently({
   territories,
   cancellationToken,
 }) {
+  // Capture which territories were already complete BEFORE allSettled — used below
+  // to suppress the per-territory summary for cached ones (we already printed
+  // "(cached, complete)" for them). Can't infer from `inv.progress.working_groups`
+  // after the fact because the finalisation loop sets every fulfilled WG to
+  // 'complete' too.
+  const cachedTids = new Set();
+  for (const territory of territories) {
+    const tid = safeSlug(territory.id || territory.territory_id);
+    if ((inv.progress.working_groups[tid] || 'pending') === 'complete') {
+      cachedTids.add(tid);
+    }
+  }
+
   const settled = await Promise.allSettled(
     territories.map((territory) => {
       const tid = safeSlug(territory.id || territory.territory_id);
@@ -189,9 +205,7 @@ async function runWorkingGroupsConcurrently({
     const territory = territories[index];
     const name = territory.name || territory.id || territory.territory_id;
     const tid = safeSlug(territory.id || territory.territory_id);
-    const wasAlreadyComplete =
-      (inv.progress.working_groups[tid] === 'complete') && result.status === 'fulfilled' && !result.value;
-    if (wasAlreadyComplete) return; // already printed "(cached, complete)" above
+    if (cachedTids.has(tid)) return; // already printed "(cached, complete)" above
     if (result.status === 'fulfilled' && result.value) {
       const wg = result.value;
       const subStagesSummary = [
@@ -504,6 +518,10 @@ async function runOne(idea, client, { cancellationToken } = {}) {
     return { ok: true };
   } catch (error) {
     const reason = classifyError(error);
+    // Defensive: idea.investigation may be null if the pipeline threw before
+    // initialising it (corrupted-data path). Build a fresh shell so we can
+    // still persist last_failure rather than crashing in the catch handler.
+    if (!idea.investigation) idea.investigation = freshInvestigation();
     const inv = idea.investigation;
     const stage = inv?.progress?.current_stage || 'unknown';
     const { tid, subStage } = inferInFlightWorkingGroup(inv);
@@ -528,24 +546,25 @@ async function runOne(idea, client, { cancellationToken } = {}) {
 }
 
 function installSigintHandler(cancellationToken) {
-  let secondSignalArmed = false;
-  function onSigint() {
+  function onSignal(signal) {
     if (!cancellationToken.requested) {
       cancellationToken.requested = true;
       process.stdout.write(
-        'received SIGINT; finishing current sub-stage and saving (press again to force-quit)…\n'
+        `received ${signal}; finishing current sub-stage and saving (press again to force-quit)…\n`
       );
-      secondSignalArmed = true;
-    } else if (secondSignalArmed) {
+    } else {
       process.stdout.write('force-quitting; partial work may be lost\n');
-      process.exit(130);
+      // POSIX convention: 128 + signal number. SIGINT = 2, SIGTERM = 15.
+      process.exit(signal === 'SIGTERM' ? 143 : 130);
     }
   }
+  const onSigint = () => onSignal('SIGINT');
+  const onSigterm = () => onSignal('SIGTERM');
   process.on('SIGINT', onSigint);
-  process.on('SIGTERM', onSigint);
+  process.on('SIGTERM', onSigterm);
   return function uninstall() {
     process.off('SIGINT', onSigint);
-    process.off('SIGTERM', onSigint);
+    process.off('SIGTERM', onSigterm);
   };
 }
 
@@ -646,4 +665,8 @@ module.exports = {
   runPipeline,
   runOne,
   performRestart,
+  parseRunSelection,
+  inferInFlightWorkingGroup,
+  checkpoint,
+  NEXT_SUBSTAGE,
 };

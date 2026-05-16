@@ -82,6 +82,26 @@ test('sanitiseMessage strips control chars and clips to 1 KB', () => {
   assert.doesNotMatch(msg, /[\x00-\x1f]/);
 });
 
+test('sanitiseMessage strips CR (\\x0d) — prevents terminal line overwrite', () => {
+  // CR alone moves the cursor to the start of the line. "legit\rmalicious" prints
+  // as "malicious" when sent to a terminal. CR must be stripped from any string
+  // that might one day be printed.
+  const msg = sanitiseMessage(new Error('legit message\rmalicious overwrite'));
+  assert.equal(msg, 'legit messagemalicious overwrite');
+  assert.ok(!msg.includes('\r'));
+});
+
+test('sanitiseMessage strips ESC (\\x1b) — prevents ANSI/OSC sequences', () => {
+  const msg = sanitiseMessage(new Error('before\x1b[31mred\x1b[0m after'));
+  assert.ok(!msg.includes('\x1b'));
+});
+
+test('sanitiseMessage preserves \\t and \\n (readable whitespace)', () => {
+  const msg = sanitiseMessage(new Error('line1\nline2\tindented'));
+  assert.ok(msg.includes('\n'));
+  assert.ok(msg.includes('\t'));
+});
+
 test('sanitiseMessage handles non-Error values', () => {
   assert.equal(sanitiseMessage('plain string'), 'plain string');
   assert.equal(sanitiseMessage({ message: 'ignored' }), '[object Object]');

@@ -465,7 +465,10 @@ async function runWorkingGroup({
   const observationLog = `pair-${safeTerritoryId}-observation`;
   if (!isSubStageComplete(wgProgressValue, 'observation')) {
     onProgress?.(`[${name}] observation start`);
-    let obsCounter = result.observations.length; // preserve existing counter offset on resume
+    // result.observations is always empty here: the skip-guard above only lets us
+    // enter when the observation sub-stage hasn't been checkpointed yet, and the
+    // sub-stage is atomic (no per-observation checkpointing).
+    let obsCounter = 0;
 
     const observationWork = pairPersonas.flatMap((persona) =>
       usefulReports.map((report) => ({ persona, report }))
@@ -525,7 +528,7 @@ async function runWorkingGroup({
       for (const obs of observations) {
         obsCounter += 1;
         result.observations.push({
-          observation_id: `o_${safeTerritoryId}_${String(obsCounter).padStart(3, '00')}`,
+          observation_id: `o_${safeTerritoryId}_${String(obsCounter).padStart(3, '0')}`,
           by_persona_id: persona.id,
           report_id: report.report_id,
           ...obs,
@@ -691,6 +694,9 @@ async function runWorkingGroup({
       : 'budget_exhausted';
 
     await onCheckpoint?.({ partialResult: result, completedSubStage: 'debate' });
+    if (cancellationToken?.requested) {
+      throw new CancellationError(`cancelled at ${territoryId} debate`);
+    }
   } else {
     const debateMoveCount = (result.moves || []).filter((m) => m.stage === 'debate').length;
     onProgress?.(`[${name}] debate cached (${debateMoveCount} moves)`);

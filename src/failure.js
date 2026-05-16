@@ -30,8 +30,11 @@ function classifyError(err) {
 
 function sanitiseMessage(err) {
   const raw = err instanceof Error ? err.message : String(err);
+  // Strip CR (\x0d) along with the other control chars: error messages may be
+  // printed to a terminal someday, and "legit\rmalicious" would overwrite the
+  // preceding line. We keep \x09 (tab) and \x0a (LF) for readability.
   // eslint-disable-next-line no-control-regex
-  return raw.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, '').slice(0, 1024);
+  return raw.replace(/[\x00-\x08\x0b-\x0c\x0d-\x1f\x7f-\x9f]/g, '').slice(0, 1024);
 }
 
 function actionableMessage({ id, reason, stage, territory_id, sub_stage }) {

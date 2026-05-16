@@ -25,6 +25,7 @@ const {
   ideaIndexPath,
   ideaLogPath,
   ideaWriteMutex,
+  _ideaMutexSize,
   listIdeas,
   listIdeasByStatus,
   normalizeLoadedIdea,
@@ -376,6 +377,48 @@ test('ideaWriteMutex propagates errors without leaking the lock', async () => {
   } finally {
     await fsp.rm(ideaDir(id), { recursive: true, force: true });
   }
+});
+
+test('ideaWriteMutex cleans up its map entry after a single op completes', async () => {
+  // Sanity: map starts empty.
+  assert.equal(_ideaMutexSize(), 0, 'map should be empty at start');
+  await ideaWriteMutex('mutex-cleanup-single', async () => {});
+  assert.equal(_ideaMutexSize(), 0, 'map should be empty after one op');
+});
+
+test('ideaWriteMutex cleans up after concurrent ops on the same id', async () => {
+  // Regression test for the original bug where the cleanup predicate
+  // (_ideaMutexes.get(id) === next) compared `next` against `prev.then(()=>next)`
+  // and never matched, causing the map to grow by one entry per processed idea.
+  const before = _ideaMutexSize();
+  const tasks = [];
+  for (let i = 0; i < 5; i++) {
+    tasks.push(
+      ideaWriteMutex('mutex-cleanup-concurrent', async () => {
+        await new Promise((r) => setTimeout(r, 5));
+      })
+    );
+  }
+  await Promise.all(tasks);
+  assert.equal(_ideaMutexSize(), before, 'map should return to original size after all ops complete');
+});
+
+test('ideaWriteMutex serialises ops on the same id (operations run sequentially)', async () => {
+  // Without the mutex, operations would interleave; with it, op N+1 must wait for op N.
+  const order = [];
+  const op = (label) =>
+    ideaWriteMutex('mutex-serialise-test', async () => {
+      order.push(`${label}-start`);
+      await new Promise((r) => setTimeout(r, 10));
+      order.push(`${label}-end`);
+    });
+  await Promise.all([op('a'), op('b'), op('c')]);
+  assert.deepEqual(order, [
+    'a-start', 'a-end',
+    'b-start', 'b-end',
+    'c-start', 'c-end',
+  ], 'each op must complete before the next starts');
+  assert.equal(_ideaMutexSize(), 0, 'no entries left behind');
 });
 
 // --- normalizeLoadedIdea: resumption fields ---

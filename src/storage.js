@@ -100,6 +100,32 @@ async function readJsonFile(filePath) {
   return JSON.parse(content);
 }
 
+/**
+ * Returns the initial (empty) investigation object for a new idea.
+ *
+ * Resumption fields (see specs/feat-investigation-resumption.md §8.2):
+ *   progress      – null until runPipeline starts; thereafter:
+ *                     {
+ *                       current_stage: '1_discovery' | '2_diversity' |
+ *                                      '3_coordinator' | '4_working_groups' |
+ *                                      '5_cross_pollination' | '6_forum' |
+ *                                      '7_synthesis' | 'complete',
+ *                       working_groups: { [territoryId: string]: SubStageProgressValue }
+ *                     }
+ *                   where SubStageProgressValue is one of: 'pending',
+ *                   'ideation_complete', 'adversarial_complete',
+ *                   'alignment_complete', 'researcher_complete',
+ *                   'observation_complete', 'debate_complete', 'complete'.
+ *   last_failure  – null on success; on failure:
+ *                     {
+ *                       reason: 'anthropic_unavailable' | 'user_cancelled' | 'internal_error',
+ *                       stage:  <current_stage value>,
+ *                       territory_id: <slug> | null,
+ *                       sub_stage:    'ideation' | 'adversarial' | ... | 'debate' | null,
+ *                       error_message: <sanitised single-line message>,
+ *                       occurred_at:   <ISO 8601>
+ *                     }
+ */
 function freshInvestigation() {
   return {
     schema_version: 'v5',
@@ -267,7 +293,17 @@ async function readLog(id, name) {
 // Per-idea async mutex that serialises concurrent read-modify-write operations
 // on index.json. Without this, two concurrent working-group checkpoint callbacks
 // can both observe findIndex === -1 and both append, duplicating entries.
-// The mutex chains Promises so each caller waits for the previous to finish.
+//
+// Use this when multiple concurrent async tasks may mutate + write the same idea
+// (e.g. working-group checkpoint callbacks under Promise.allSettled). Callers
+// that run only one writer at a time (the top-level runPipeline stages) may call
+// writeIdea directly without going through the mutex.
+//
+// Each caller stores its own `next` (its release signal) in the map and replaces
+// the previous entry. The chain is built by each new caller capturing the prior
+// `next` from the map and awaiting it. The cleanup predicate compares against
+// the same `next` we stored, so only the last caller in the chain deletes the
+// map entry — otherwise the map would grow by one entry per processed idea.
 const _ideaMutexes = new Map();
 async function ideaWriteMutex(id, fn) {
   const prev = _ideaMutexes.get(id) || Promise.resolve();
@@ -275,7 +311,7 @@ async function ideaWriteMutex(id, fn) {
   const next = new Promise((r) => {
     resolveNext = r;
   });
-  _ideaMutexes.set(id, prev.then(() => next));
+  _ideaMutexes.set(id, next);
   await prev;
   try {
     return await fn();
@@ -283,6 +319,11 @@ async function ideaWriteMutex(id, fn) {
     resolveNext();
     if (_ideaMutexes.get(id) === next) _ideaMutexes.delete(id);
   }
+}
+
+// Test-only: number of live mutex entries. Used to verify the cleanup predicate.
+function _ideaMutexSize() {
+  return _ideaMutexes.size;
 }
 
 module.exports = {
@@ -314,4 +355,5 @@ module.exports = {
   ideaLogPath,
   archivedIdeaDir,
   ideaWriteMutex,
+  _ideaMutexSize,
 };

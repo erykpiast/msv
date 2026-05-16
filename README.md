@@ -28,7 +28,7 @@ msv add < notes.txt
 msv add        # type, then Ctrl-D
 ```
 
-### `msv run [--all | <id>]`
+### `msv run [--all | <id> [--restart]]`
 
 Runs the v5 question-generation pipeline:
 
@@ -49,9 +49,22 @@ Runs the v5 question-generation pipeline:
 ```bash
 msv run --all
 msv run 8db8e9bf-5cb7-4fda-a2a8-9796b0511f9d
+msv run 8db8e9bf-5cb7-4fda-a2a8-9796b0511f9d --restart
 ```
 
-On failure the idea is left in `investigating` state. To retry, hand-edit `~/.msv/ideas/<id>/index.json`: set `status` back to `"pending"`, clear `investigation.completed_at`, then re-run `msv run <id>`.
+#### Resumption
+
+The pipeline persists a checkpoint after each macro stage and after each sub-stage within stage 4. On failure or `Ctrl-C` the idea is left in `investigating` state with the checkpoint pointer intact. Re-run `msv run <id>` to auto-resume from the last completed sub-stage — completed stages are skipped, the affected working group picks up where it stopped, and remaining territories run from scratch.
+
+The persisted `investigation.last_failure` carries a typed reason (`anthropic_unavailable`, `user_cancelled`, `internal_error`) and the stage/territory/sub-stage where the error occurred. It's cleared on a successful resume.
+
+To abandon prior progress and start over, use `--restart`. The previous logs and an `index.json.before-restart` snapshot are archived under `~/.msv/ideas/<id>/.attempts/<timestamp>/` for forensics; the active state is reset to `pending`.
+
+`Ctrl-C` is cooperative: the first press finishes the current sub-stage, saves the checkpoint, and exits with code 130; a second press force-quits and may lose in-flight work.
+
+Ideas written by older code (no `progress` field on `investigation`) are treated as "no resume anchor" — `msv run <id>` will print a notice and re-run from stage 1. Use `--restart` to archive their logs first.
+
+See [`specs/feat-investigation-resumption.md`](specs/feat-investigation-resumption.md) for the full design.
 
 ### `msv inspect <id>`
 
@@ -146,4 +159,4 @@ Tests cover the deterministic pieces (moves, diversity, forum aggregation rules,
 
 The higher cost versus v4 reflects the joint AI researcher sub-agent conducting real web research per aligned question, which is the core mechanism for producing evidence-grounded questions a single-agent pass would never surface.
 
-Concurrent invocations are not supported — no locking. Don't run two `msv run --all` instances in parallel.
+Concurrent invocations are not supported — no inter-process locking. Don't run two `msv run` instances against the same idea in parallel; the lack of a lock file means a stale checkpoint write can regress progress.
