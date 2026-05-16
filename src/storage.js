@@ -169,6 +169,25 @@ async function listIdeasByStatus(status) {
   return ideas.filter((idea) => idea.status === status);
 }
 
+async function listArchivedIdeas() {
+  await ensureStorageDirs();
+  const entries = await fs.readdir(ARCHIVE_DIR, { withFileTypes: true });
+  const dirs = entries.filter((entry) => entry.isDirectory());
+  const ideas = await Promise.all(
+    dirs.map(async (entry) => {
+      try {
+        return await readJsonFile(path.join(ARCHIVE_DIR, entry.name, 'index.json'));
+      } catch (err) {
+        if (err.code === 'ENOENT') return null;
+        throw err;
+      }
+    })
+  );
+  return ideas
+    .filter((idea) => idea !== null)
+    .sort((a, b) => (a.captured_at || '').localeCompare(b.captured_at || ''));
+}
+
 async function archiveIdea(id) {
   await fs.rename(ideaDir(id), archivedIdeaDir(id));
 }
@@ -202,6 +221,7 @@ module.exports = {
   readIdea,
   listIdeas,
   listIdeasByStatus,
+  listArchivedIdeas,
   archiveIdea,
   appendLog,
   readLog,
