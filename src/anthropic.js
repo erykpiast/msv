@@ -42,27 +42,151 @@ function extractToolUse(response, toolName) {
   return blocks.find((block) => block.type === 'tool_use' && block.name === toolName) || null;
 }
 
+// Detect an error payload in a web_search_tool_result block. Anthropic's
+// web_search_20250305 returns `content` as either an array of web_search_result
+// items (success) OR an object { type: 'web_search_tool_result_error',
+// error_code: ... }. Some SDK builds may also nest the error inside the array.
+function isWebSearchErrorContent(content) {
+  if (content && !Array.isArray(content) && content.type === 'web_search_tool_result_error') {
+    return true;
+  }
+  if (Array.isArray(content)) {
+    return content.some((c) => c?.type === 'web_search_tool_result_error');
+  }
+  return false;
+}
+
+function parseWebSearchToolResult(content) {
+  if (content && !Array.isArray(content) && content.type === 'web_search_tool_result_error') {
+    return { results: [], error: { code: content.error_code ?? null } };
+  }
+  if (Array.isArray(content)) {
+    const errorEntry = content.find((c) => c?.type === 'web_search_tool_result_error');
+    if (errorEntry) {
+      return { results: [], error: { code: errorEntry.error_code ?? null } };
+    }
+    const results = content
+      .filter((r) => r.type === 'web_search_result')
+      .map((r) => ({
+        title: r.title || '',
+        url: r.url || '',
+        page_age: r.page_age ?? null,
+      }));
+    return { results, error: null };
+  }
+  return { results: [], error: { code: 'unknown' } };
+}
+
 function extractWebSearches(response) {
   const blocks = response?.content || [];
   const searches = [];
   let pending = null;
+  let pendingResolved = false;
+  const flushPending = () => {
+    if (!pending) return;
+    // Server_tool_use with no paired result block: surface as an error rather
+    // than masquerading as a zero-hit success (which is how the original
+    // bimodal-0/10 masking bug looked).
+    if (!pendingResolved) pending.error = { code: 'unknown' };
+    searches.push(pending);
+  };
   for (const block of blocks) {
     if (block.type === 'server_tool_use' && block.name === 'web_search') {
-      if (pending) searches.push(pending);
-      pending = { query: block.input?.query || '', results: [] };
+      flushPending();
+      pending = { query: block.input?.query || '', results: [], error: null };
+      pendingResolved = false;
     } else if (block.type === 'web_search_tool_result' && pending) {
-      const content = Array.isArray(block.content) ? block.content : [];
-      pending.results = content
-        .filter((r) => r.type === 'web_search_result')
-        .map((r) => ({
-          title: r.title || '',
-          url: r.url || '',
-          page_age: r.page_age ?? null,
-        }));
+      const parsed = parseWebSearchToolResult(block.content);
+      pending.results = parsed.results;
+      pending.error = parsed.error;
+      pendingResolved = true;
     }
   }
-  if (pending) searches.push(pending);
+  flushPending();
   return searches;
+}
+
+// --- web_search retry service -----------------------------------------------
+//
+// web_search is a server-side tool: the search runs inside Anthropic's API
+// call, not on our machine. Transport-level failures (429, 5xx, network) are
+// already retried by apiQueue. But search-engine errors (too_many_requests,
+// unavailable, ...) arrive as content blocks inside an HTTP-200 response and
+// are invisible to apiQueue. This helper re-issues the WHOLE turn when a
+// response carries a retryable web_search error.
+
+const WEB_SEARCH_RETRYABLE_CODES = new Set(['too_many_requests', 'unavailable', 'unknown']);
+const DEFAULT_WEB_SEARCH_RETRY_ATTEMPTS = 3;
+const WEB_SEARCH_RETRY_BASE_MS = 2_000;
+// Real Anthropic rate-limit windows are typically 30-60s; backoff has to span
+// that or retries are guaranteed to hit the same rate-limit window.
+const WEB_SEARCH_RETRY_MAX_MS = 30_000;
+
+function isRetryableWebSearchError(err) {
+  return !!err && WEB_SEARCH_RETRYABLE_CODES.has(err.code);
+}
+
+function summarizeSearches(searches) {
+  let success = 0;
+  let retryable = 0;
+  let nonRetryable = 0;
+  for (const s of searches) {
+    if (!s.error) success += 1;
+    else if (isRetryableWebSearchError(s.error)) retryable += 1;
+    else nonRetryable += 1;
+  }
+  return {
+    search_count: searches.length,
+    success_count: success,
+    retryable_error_count: retryable,
+    non_retryable_error_count: nonRetryable,
+  };
+}
+
+async function runWithWebSearchRetry({
+  doCall,
+  maxAttempts = DEFAULT_WEB_SEARCH_RETRY_ATTEMPTS,
+  baseBackoffMs = WEB_SEARCH_RETRY_BASE_MS,
+  maxBackoffMs = WEB_SEARCH_RETRY_MAX_MS,
+  onAttempt,
+  sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+  random = Math.random,
+} = {}) {
+  if (typeof doCall !== 'function') throw new Error('doCall is required');
+  let response;
+  let searches = [];
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    // Transport-level rejections from doCall (i.e. apiQueue gave up on 429s,
+    // 5xx, or network errors) propagate to the caller intentionally.
+    response = await doCall();
+    searches = extractWebSearches(response);
+    const summary = summarizeSearches(searches);
+    if (onAttempt) {
+      await onAttempt({ attempt, maxAttempts, response, summary });
+    }
+    // Retry only when EVERY search failed retryably. If anything succeeded, the
+    // model has partial research context — better to fall through to whatever
+    // the caller's fallback path is (e.g. discovery's forced-emit Turn 2) than
+    // burn another full turn that will likely hit the same rate-limit window.
+    const shouldRetry =
+      summary.retryable_error_count > 0 &&
+      summary.success_count === 0 &&
+      attempt < maxAttempts;
+    if (!shouldRetry) {
+      return {
+        response,
+        attempts: attempt,
+        searches,
+        residual_errors: searches.filter((s) => s.error),
+      };
+    }
+    const base = Math.min(baseBackoffMs * 2 ** (attempt - 1), maxBackoffMs);
+    const jittered = base * (0.75 + random() * 0.5);
+    await sleep(jittered);
+  }
+  // Unreachable: the loop always returns. Throw rather than return a half-
+  // formed object so any future refactor that breaks the invariant fails loud.
+  throw new Error('runWithWebSearchRetry: loop exited without returning');
 }
 
 function tokenUsage(response) {
@@ -82,6 +206,10 @@ function tokenUsage(response) {
  * If `forceTool` is provided, we set tool_choice to force that tool. The first
  * occurrence of that tool's input is returned. Server tools (web_search) are
  * still permitted; the API resolves them transparently.
+ *
+ * Do NOT pass `budget` if this call is wrapped in `runWithWebSearchRetry` and
+ * the caller's `onAttempt` already increments the budget — that would double-
+ * count tokens and executor calls.
  */
 async function runStructuredCall({
   client,
@@ -157,6 +285,10 @@ module.exports = {
   webFetchTool,
   extractToolUse,
   extractWebSearches,
+  parseWebSearchToolResult,
+  isWebSearchErrorContent,
+  isRetryableWebSearchError,
+  runWithWebSearchRetry,
   tokenUsage,
   runStructuredCall,
   getStats: apiQueue.getStats,
