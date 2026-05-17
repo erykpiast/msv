@@ -189,7 +189,6 @@ export function ForumGraph({
           nodesDraggable={false}
           nodesConnectable={false}
           edgesFocusable={false}
-          proOptions={{ hideAttribution: true }}
           onNodeClick={(_e, node) => onNodeSelect?.(node.id)}
         >
           <Background gap={24} color="#f3f4f6" />

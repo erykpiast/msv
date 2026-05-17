@@ -9,7 +9,8 @@ export function AdversarialPanel({
   wg: WorkingGroupView;
   personaName: (id: string) => string;
 }) {
-  const { adversarial_marks, candidate_questions } = wg;
+  const adversarial_marks = wg.adversarial_marks ?? [];
+  const candidate_questions = wg.candidate_questions ?? [];
 
   if (!adversarial_marks.length) {
     return <Text c="dimmed" size="sm">No adversarial marks recorded.</Text>;

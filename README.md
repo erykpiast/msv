@@ -82,15 +82,26 @@ Auto-selection picks `log` if `CI` or `NO_TUI` is set, or if `process.stdout.isT
 
 ### `msv inspect <id>`
 
-Boots a local Vite dev server with a React SPA showing the full transcript of an investigation. For v5 ideas, the inspector shows:
+Boots a local Vite dev server with a React SPA that visualises the investigation
+as an interactive pipeline graph. Stages render as boxes; lightweight stages
+(Discovery, Coordinator, Cross-Pollination) expand in place; Working Groups and
+the Forum drill into sub-canvases. Clicking a leaf (a debate move, a finding, a
+forum claim) opens a side panel with the full content. Deep links survive
+reload via the URL hash.
 
-- Discovery: search queries, candidate personas
-- Territories: coordinator output with assigned pairs
-- Working groups: tabbed view per territory — Ideation, Adversarial marks, Alignment questions, Researcher reports (findings per aligned question), Observations, Pair debate
-- Forum: surviving claims graph, contradiction edges, dead-end panel (v5)
-- Synthesis: headline findings, question landscape (v5), dead-end summary (v5), report
+What you see in the canvas, by stage:
 
-The inspector detects `schema_version` and routes v4 and v5 ideas through separate component trees.
+- Discovery: search queries, candidate personas, selection scores.
+- Coordinator: territories with assigned persona pairs.
+- Working groups: six sub-stages (Ideation, Adversarial, Alignment,
+  Researcher, Observations, Debate) per territory.
+- Cross-Pollination: reactions to surviving claims.
+- Forum: surviving-claims graph with contradiction edges, dead-end list (v5).
+- Synthesis: headline findings, question landscape (v5), dead-end summary
+  (v5), full Markdown report.
+
+The inspector detects `schema_version`. v4 ideas render a one-line empty state;
+v5 ideas land on the graph.
 
 ```bash
 msv inspect 722b7e3c-e231-46c8-84cd-b2f272222323

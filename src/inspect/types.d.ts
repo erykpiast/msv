@@ -323,6 +323,14 @@ export type ForumViewV5 = ForumView & {
   dead_end_questions: DeadEndQuestion[];
 };
 
+export type LastFailure = {
+  reason: string;
+  stage?: string;
+  territory_id?: string;
+  sub_stage?: string;
+  at?: string;
+};
+
 export type InvestigationView = {
   id: string;
   raw_capture: string;
@@ -345,4 +353,5 @@ export type InvestigationView = {
   synthesis: SynthesisView;
   persona_interactions: PersonaInteractions;
   parse_errors: ParseErrorEntry[];
+  last_failure?: LastFailure;
 };

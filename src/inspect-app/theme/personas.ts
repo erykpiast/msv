@@ -17,13 +17,14 @@ const FIXED_COLOURS: Record<string, string> = {
   builder: '#0072B2',
 };
 
-export function personaColor(personaId: string): string {
+export function personaColor(personaId: string | undefined | null): string {
+  if (!personaId) return PALETTE[PALETTE.length - 1]!;
   if (FIXED_COLOURS[personaId]) return FIXED_COLOURS[personaId];
   let h = 0;
   for (let i = 0; i < personaId.length; i += 1) {
     h = (h * 31 + personaId.charCodeAt(i)) | 0;
   }
-  return PALETTE[Math.abs(h) % PALETTE.length];
+  return PALETTE[Math.abs(h) % PALETTE.length]!;
 }
 
 export { PALETTE };

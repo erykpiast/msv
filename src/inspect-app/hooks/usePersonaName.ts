@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useCallback, useMemo } from 'react';
 import { useViewContext } from '../ViewContext';
 
 export function usePersonaName(): (id: string) => string {
@@ -8,5 +8,5 @@ export function usePersonaName(): (id: string) => string {
     for (const p of view.discovery.candidate_personas) m.set(p.id, p.name);
     return m;
   }, [view.discovery.candidate_personas]);
-  return (id: string) => map.get(id) ?? id;
+  return useCallback((id: string) => map.get(id) ?? id, [map]);
 }

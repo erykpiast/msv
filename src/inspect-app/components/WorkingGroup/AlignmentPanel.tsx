@@ -25,7 +25,7 @@ export function AlignmentPanel({
   wg: WorkingGroupView;
   personaName: (id: string) => string;
 }) {
-  const { aligned_questions } = wg;
+  const aligned_questions = wg.aligned_questions ?? [];
 
   if (!aligned_questions.length) {
     return <Text c="dimmed" size="sm">No aligned questions produced.</Text>;

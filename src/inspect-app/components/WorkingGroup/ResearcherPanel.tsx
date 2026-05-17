@@ -9,7 +9,8 @@ const OUTCOME_COLOR = {
 } as const;
 
 export function ResearcherPanel({ wg }: { wg: WorkingGroupView }) {
-  const { researcher_reports, aligned_questions } = wg;
+  const researcher_reports = wg.researcher_reports ?? [];
+  const aligned_questions = wg.aligned_questions ?? [];
 
   if (!researcher_reports.length) {
     return <Text c="dimmed" size="sm">No researcher reports recorded.</Text>;
