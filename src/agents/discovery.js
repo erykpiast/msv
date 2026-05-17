@@ -1,8 +1,9 @@
 const {
   webSearchTool,
-  extractWebSearches,
   extractToolUse,
   tokenUsage,
+  runWithWebSearchRetry,
+  isWebSearchErrorContent,
 } = require('../anthropic');
 const apiQueue = require('../api_queue');
 const { PERSPECTIVE_DISCOVERY } = require('./prompts');
@@ -61,6 +62,11 @@ async function streamWithProgress(client, params, onContentBlock) {
 // didn't emit, a second call forces emit_personas with the prior context.
 // Forcing emit_personas from the first turn blocks web_search entirely and
 // frequently yields empty persona rosters.
+//
+// Turn 1 is additionally wrapped in runWithWebSearchRetry, which re-issues the
+// whole call when EVERY web_search returned a retryable error (e.g. upstream
+// rate-limited). Partial success skips retry — the model has enough context
+// and Turn 2's forced-emit handles persona generation regardless.
 async function runPerspectiveDiscovery({ client, idea, model, budget, onProgress }) {
   const rawCapture = idea.raw_capture;
 
@@ -77,39 +83,76 @@ async function runPerspectiveDiscovery({ client, idea, model, budget, onProgress
     },
   ];
 
-  const firstResponse = await apiQueue.enqueue(() =>
-    streamWithProgress(
-      client,
-      {
-        model,
-        system: PERSPECTIVE_DISCOVERY,
-        max_tokens: DISCOVERY_MAX_TOKENS,
-        messages,
-        tools,
-      },
-      (block) => {
-        if (!onProgress) return;
-        if (block.type === 'server_tool_use' && block.name === 'web_search') {
-          onProgress(`web_search: ${block.input?.query || '(no query)'}`);
-        } else if (block.type === 'web_search_tool_result') {
-          const count = Array.isArray(block.content) ? block.content.length : 0;
-          onProgress(`web_search returned ${count} results`);
-        } else if (block.type === 'tool_use' && block.name === 'emit_personas') {
-          const n = (block.input?.candidate_personas || []).length;
-          onProgress(`emit_personas (${n} candidates)`);
-        }
+  const turn1OnBlock = (block) => {
+    if (!onProgress) return;
+    if (block.type === 'server_tool_use' && block.name === 'web_search') {
+      onProgress(`web_search: ${block.input?.query || '(no query)'}`);
+    } else if (block.type === 'web_search_tool_result') {
+      const c = block.content;
+      if (isWebSearchErrorContent(c)) {
+        const code = !Array.isArray(c) ? c?.error_code : c.find((x) => x?.type === 'web_search_tool_result_error')?.error_code;
+        onProgress(`web_search ERROR: ${code || 'unknown'}`);
+      } else {
+        const count = Array.isArray(c)
+          ? c.filter((r) => r?.type === 'web_search_result').length
+          : 0;
+        onProgress(`web_search returned ${count} results`);
       }
-    )
-  );
-  const firstUsage = tokenUsage(firstResponse);
-  if (budget) {
-    budget.used_executor_calls = (budget.used_executor_calls || 0) + 1;
-    budget.used_total_tokens = (budget.used_total_tokens || 0) + firstUsage.total;
-  }
+    } else if (block.type === 'tool_use' && block.name === 'emit_personas') {
+      const n = (block.input?.candidate_personas || []).length;
+      onProgress(`emit_personas (${n} candidates)`);
+    }
+  };
 
-  const firstSearches = extractWebSearches(firstResponse);
+  const {
+    response: firstResponse,
+    attempts: firstAttempts,
+    searches: firstSearches,
+    residual_errors: firstResidual,
+  } = await runWithWebSearchRetry({
+    doCall: () =>
+      apiQueue.enqueue(() =>
+        streamWithProgress(
+          client,
+          {
+            model,
+            system: PERSPECTIVE_DISCOVERY,
+            max_tokens: DISCOVERY_MAX_TOKENS,
+            messages,
+            tools,
+          },
+          turn1OnBlock
+        )
+      ),
+    onAttempt: async ({ attempt, maxAttempts, response, summary }) => {
+      const u = tokenUsage(response);
+      if (budget) {
+        budget.used_executor_calls = (budget.used_executor_calls || 0) + 1;
+        budget.used_total_tokens = (budget.used_total_tokens || 0) + u.total;
+      }
+      await appendLog(idea.id, 'discovery', {
+        kind: 'web_search_attempt',
+        payload: { turn_index: 0, attempt, usage: u, ...summary },
+      });
+      if (onProgress && summary.retryable_error_count > 0 && attempt < maxAttempts) {
+        onProgress(
+          `web_search retry: attempt ${attempt} had ${summary.retryable_error_count} retryable errors`
+        );
+      }
+    },
+  });
+  const firstUsage = tokenUsage(firstResponse);
+
   for (const search of firstSearches) {
-    await appendLog(idea.id, 'discovery', { kind: 'web_search', payload: search });
+    await appendLog(idea.id, 'discovery', {
+      kind: 'web_search',
+      payload: {
+        query: search.query,
+        result_count: search.results.length,
+        results: search.results,
+        error: search.error,
+      },
+    });
   }
   await appendLog(idea.id, 'discovery', {
     kind: 'turn',
@@ -119,6 +162,8 @@ async function runPerspectiveDiscovery({ client, idea, model, budget, onProgress
       usage: firstUsage,
       server_tool_calls: firstSearches.length,
       forced: false,
+      retry_attempts: firstAttempts,
+      residual_error_count: firstResidual.length,
     },
   });
 
@@ -145,11 +190,15 @@ async function runPerspectiveDiscovery({ client, idea, model, budget, onProgress
     if (cleanedContent.length > 0) {
       messages.push({ role: 'assistant', content: cleanedContent });
     }
-    messages.push({
-      role: 'user',
-      content:
-        'Now emit the candidate persona roster via the emit_personas tool, based on what you learned from your searches.',
-    });
+    let turn2Content =
+      'Now emit the candidate persona roster via the emit_personas tool, based on what you learned from your searches.';
+    if (firstResidual.length > 0) {
+      const failedList = firstResidual
+        .map((s) => `- "${s.query}" (${s.error?.code || 'unknown'})`)
+        .join('\n');
+      turn2Content += `\n\nNote: the following searches failed and could not be retried successfully — proceed with the evidence you have and acknowledge coverage gaps where relevant:\n\n${failedList}`;
+    }
+    messages.push({ role: 'user', content: turn2Content });
 
     const secondResponse = await apiQueue.enqueue(() =>
       streamWithProgress(

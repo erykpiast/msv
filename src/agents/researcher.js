@@ -5,7 +5,13 @@
  * See spec §6.5 for the full design.
  */
 
-const { runStructuredCall, webSearchTool, webFetchTool, tokenUsage } = require('../anthropic');
+const {
+  runStructuredCall,
+  webSearchTool,
+  webFetchTool,
+  tokenUsage,
+  extractWebSearches,
+} = require('../anthropic');
 const { RESEARCHER_TOOL_BUDGET, RESEARCHER_TURN_BUDGET, RESEARCHER_REPORT_JSON_SCHEMA } = require('../moves');
 const { RESEARCHER } = require('./prompts');
 const { appendLog } = require('../storage');
@@ -113,6 +119,23 @@ async function runJointResearcher({
         forced: forceEmit,
       },
     });
+
+    // Per-search observability: log query + result_count + error per web_search
+    // call. Result detail is intentionally omitted — researcher logs span many
+    // turns and including full result arrays bloats the on-disk footprint.
+    // Findings are captured via the model's eventual emit_researcher_report.
+    const turnSearches = extractWebSearches(response);
+    for (const s of turnSearches) {
+      await appendLog(idea.id, logFile, {
+        kind: 'web_search',
+        payload: {
+          turn_index: turnIndex,
+          query: s.query,
+          result_count: s.results.length,
+          error: s.error,
+        },
+      });
+    }
 
     // Check for the final report tool call.
     const reportBlock = (response.content || []).find(

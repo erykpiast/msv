@@ -186,9 +186,20 @@ export type WebSearchResult = {
   page_age?: string;
 };
 
+export type WebSearchError = {
+  code: string | null;
+};
+
 export type WebSearchPayload = {
   query: string;
   results: WebSearchResult[];
+  result_count?: number;
+  /**
+   * `null` when the search succeeded (including legitimate zero-hit results).
+   * `undefined` only in log records written before error reporting was added;
+   * the discovery loader normalizes those to `null` on read.
+   */
+  error?: WebSearchError | null;
 };
 
 export type StageKey =
