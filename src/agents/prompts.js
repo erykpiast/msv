@@ -222,6 +222,42 @@ Produce exactly:
 
 Invoke the \`emit_synthesis\` tool. Do not respond with free-form text.`;
 
+// ---------------------------------------------------------------------------
+// Cosmetic — Nicknamer (Haiku)
+// ---------------------------------------------------------------------------
+
+// Per-WG nicknamer. Runs once at the end of a working group to attach short
+// kebab-case handles to the WG's moves and observations. The batch is scoped
+// to one territory so the model has consistent context (topic + persona names
+// + territory name) when picking names — cross-WG uniqueness is not its
+// concern.
+const NICKNAMER_WG = `You assign short, memorable nicknames to research-pipeline entities (debate moves and observations) so humans can recognise them at a glance. Nicknames are display-only labels — never replace the canonical id.
+
+For each entity in the input:
+- Read the content and produce a nickname of two or three lowercase kebab-case words (e.g. "friction-cliff", "cold-start-tax", "minority-veto").
+- The nickname must evoke the substance of the move or observation, ideally tying back to the topic or territory.
+- Avoid generic words: no "claim-1", "point-a", "move-x", "first-claim", "thing".
+- Keep each nickname unique within this batch and ≤25 chars total.
+- Produce exactly one nickname per id in the input. Do not invent new ids.
+
+Always invoke the \`emit_nicknames\` tool. Do not return free-form text.`;
+
+// Forum-scoped variant. Runs once after contradiction judging finishes,
+// across all surviving claims promoted to forum nodes. Single batch on
+// purpose so nicknames stay unique inside the entire forum graph — that is
+// what the inspect-app actually renders, so cross-territory collision is the
+// failure mode worth preventing.
+const NICKNAMER_FORUM = `You assign short, memorable nicknames to forum nodes (surviving claims from a multi-agent research debate) so humans can recognise them at a glance. Nicknames are display-only labels — never replace the canonical node_id.
+
+For each node in the input:
+- Read the claim content and produce a nickname of two or three lowercase kebab-case words (e.g. "friction-cliff", "cold-start-tax", "minority-veto").
+- The nickname must evoke the substance of the claim, ideally tying back to the topic.
+- Avoid generic words: no "node-1", "claim-a", "first-finding", "thing".
+- Keep each nickname unique within this batch and ≤25 chars total.
+- Produce exactly one nickname per id in the input. Do not invent new ids.
+
+Always invoke the \`emit_nicknames\` tool. Do not return free-form text.`;
+
 module.exports = {
   PERSPECTIVE_DISCOVERY,
   COORDINATOR_TERRITORIES,
@@ -234,6 +270,8 @@ module.exports = {
   RESEARCHER,
   CROSS_POLLINATION,
   SYNTHESIZER,
+  NICKNAMER_WG,
+  NICKNAMER_FORUM,
   // v4 compat aliases
   COORDINATOR_INITIAL: COORDINATOR_TERRITORIES,
   PERSONA_BASE: PERSONA_DEBATE,

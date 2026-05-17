@@ -58,7 +58,8 @@ Six sub-stages, fanned out across pairs. Every event carries a `territory_id` co
 | `wg.debate.start` | `{ territory_id }` | Top of 5.4f |
 | `wg.debate.done` | `{ territory_id, move_count, claim_count, terminated_by }` | End of 5.4f |
 | `wg.move` | `{ territory_id, phase, move_id, persona_id, type, confidence? }` | Each accepted move in either sub-stage |
-| `wg.end` | `{ territory_id, candidate_count, aligned_count, report_count, observation_count, claim_count, terminated_by }` | Return point of `runWorkingGroup` |
+| `wg.nicknames.done` | `{ territory_id, count }` | Cosmetic post-processing after `wg.end`: after the per-WG nicknamer attaches kebab-case display labels to every move + observation. Not a pipeline sub-stage — dashboards should not surface a substage indicator for it. Absent if the nicknamer produced nothing (empty batch or LLM failure). |
+| `wg.end` | `{ territory_id, candidate_count, aligned_count, report_count, observation_count, claim_count, terminated_by }` | Emitted before the cosmetic nicknamer awaits, so the dashboard advances the WG card off the critical path |
 | `wg.failed` | `{ territory_id, reason }` | When `runWorkingGroupsConcurrently` sees a `Promise.allSettled` rejection |
 
 `wg.move.phase` is `alignment` or `debate`. `wg.move.type` is one of `Propose | Sharpen | Merge | Drop | Defer` for alignment, or `Claim | Support | Rebut | Question | Concede` for debate. `confidence` is only present on debate moves.
@@ -75,6 +76,7 @@ Six sub-stages, fanned out across pairs. Every event carries a `territory_id` co
 | Event | Payload (core) | When emitted |
 |---|---|---|
 | `forum.contradiction.judged` | `{ a_node, b_node, contradicts }` | Each contradiction LLM call resolves |
+| `forum.nicknames.done` | `{ count }` | Cosmetic post-processing inside `aggregateForum`: after the forum nicknamer attaches kebab-case display labels to every node. No `territory_id` (cross-territory batch). Absent if the nicknamer produced nothing. |
 | `forum.done` | `{ node_count, contradiction_count, dead_end_count }` | End of stage |
 
 ## Synthesizer (stage 7)

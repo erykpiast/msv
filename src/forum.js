@@ -1,5 +1,6 @@
 const { runStructuredCall } = require('./anthropic');
 const { appendLog } = require('./storage');
+const { attachForumNicknames } = require('./nicknamer');
 
 const CONTRADICTION_TOOL = {
   name: 'emit_contradiction_judgement',
@@ -208,6 +209,12 @@ async function aggregateForum({ client, idea, model, budget, pairDebates, crossP
   nodes.forEach((node, index) => {
     node.survival_rank = index + 1;
   });
+
+  // Cosmetic nicknamer: batch-name every forum node so the graph can show
+  // "friction-cliff" rather than "n_007". The originating claim's nickname is
+  // preserved on the surviving_claims, but the forum node is the user-facing
+  // entity in the inspect-app and deserves a fresh top-level nickname.
+  await attachForumNicknames({ client, idea, nodes, bus });
 
   const deadEndQuestions = buildDeadEndQuestions(pairDebates);
 

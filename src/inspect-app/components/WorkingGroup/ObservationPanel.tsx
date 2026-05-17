@@ -31,6 +31,9 @@ export function ObservationPanel({
         <Card key={obs.observation_id} accentColor={personaColor(obs.by_persona_id)}>
           <Stack gap="xs">
             <Group gap="xs">
+              {obs.nickname ? (
+                <Text size="xs" fw={700}>{obs.nickname}</Text>
+              ) : null}
               <Text size="xs" c="dimmed" fw={600}>{obs.observation_id}</Text>
               <PersonaChip personaId={obs.by_persona_id} label={personaName(obs.by_persona_id)} />
             </Group>

@@ -463,6 +463,26 @@ test('working_group.js emits every required event from spec §10.6', () => {
   }
 });
 
+// Cosmetic nicknamer emits its event from src/nicknamer.js, not working_group.js,
+// because the attach helpers were consolidated into the nicknamer module. The
+// grep guard moves with the emit.
+test('nicknamer.js emits wg.nicknames.done and forum.nicknames.done', () => {
+  const nicknamerSrc = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'nicknamer.js'),
+    'utf8'
+  );
+  assert.match(
+    nicknamerSrc,
+    /bus\.emit\(\s*['"]wg\.nicknames\.done['"]/,
+    `nicknamer.js no longer emits 'wg.nicknames.done' — regression`
+  );
+  assert.match(
+    nicknamerSrc,
+    /bus\.emit\(\s*['"]forum\.nicknames\.done['"]/,
+    `nicknamer.js no longer emits 'forum.nicknames.done' — regression`
+  );
+});
+
 test('researcher.js emits every required wg.researcher.* event from spec §10.6', () => {
   const researcherSrc = fs.readFileSync(
     path.join(__dirname, '..', 'src', 'agents', 'researcher.js'),

@@ -49,6 +49,8 @@ const FORMATTERS = {
     `[info] [${e.territory_id}] wg.observation.done · ${e.observation_count} observations`,
   'wg.debate.done': (e) =>
     `[info] [${e.territory_id}] wg.debate.done · ${e.move_count} moves, ${e.claim_count} claims · ${e.terminated_by}`,
+  'wg.nicknames.done': (e) =>
+    `[info] [${e.territory_id}] wg.nicknames.done · ${e.count} named`,
   'wg.end': (e) =>
     `[info] [${e.territory_id}] wg.end · ${e.aligned_count} aligned, ${e.report_count} reports, ${e.observation_count} observations, ${e.claim_count} claims · ${e.terminated_by}`,
   'wg.failed': (e) =>
@@ -57,6 +59,8 @@ const FORMATTERS = {
   'cross_pollination.done': (e) =>
     `[info] [cross_pollination] done · ${e.reaction_count} reactions`,
 
+  'forum.nicknames.done': (e) =>
+    `[info] [forum] nicknames.done · ${e.count} named`,
   'forum.done': (e) =>
     `[info] [forum] done · ${e.node_count} nodes, ${e.contradiction_count} contradictions, ${e.dead_end_count} dead ends`,
 

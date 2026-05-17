@@ -27,6 +27,7 @@ const {
 } = require('./moves');
 const { appendLog, safeSlug } = require('./storage');
 const { CancellationError } = require('./failure');
+const { attachWorkingGroupNicknames } = require('./nicknamer');
 
 // territory.id is the canonical key, but coordinator-emitted territory_id is
 // preserved as a fallback for any code path that constructs from raw model output.
@@ -748,6 +749,21 @@ async function runWorkingGroup({
     terminated_by: result.terminated_by,
   });
 
+  // Cosmetic nicknamer: batch-name every move + observation in this WG so the
+  // UI/replay tool can show "friction-cliff" rather than "m_t_002_debate_0007".
+  // Kick off before emitting `wg.end` so the TUI advances the WG card off the
+  // critical path, but await before returning so the caller's checkpoint
+  // persists nickname-decorated entities.
+  const nicknamePromise = attachWorkingGroupNicknames({
+    client,
+    idea,
+    result,
+    territory,
+    personas: pairPersonas,
+    bus,
+    territoryId: safeTerritoryId,
+  });
+
   if (bus) bus.emit('wg.end', {
     territory_id: safeTerritoryId,
     candidate_count: result.candidate_questions.length,
@@ -758,6 +774,7 @@ async function runWorkingGroup({
     terminated_by: result.terminated_by,
   });
 
+  await nicknamePromise;
   return result;
 }
 
