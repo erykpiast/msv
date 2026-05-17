@@ -11,7 +11,7 @@ export function IdeationPanel({
   wg: WorkingGroupView;
   personaName: (id: string) => string;
 }) {
-  const { candidate_questions } = wg;
+  const candidate_questions = wg.candidate_questions ?? [];
 
   if (!candidate_questions.length) {
     return <Text c="dimmed" size="sm">No candidate questions recorded.</Text>;

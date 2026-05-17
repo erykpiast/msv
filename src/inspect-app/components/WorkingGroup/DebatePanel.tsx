@@ -11,7 +11,7 @@ export function DebatePanel({
   personaName: (id: string) => string;
   survivingIds: Set<string>;
 }) {
-  const { moves } = wg;
+  const moves = wg.moves ?? [];
 
   if (!moves.length) {
     return <Text c="dimmed" size="sm">No debate moves recorded.</Text>;

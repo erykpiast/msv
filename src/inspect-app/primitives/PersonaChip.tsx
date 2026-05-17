@@ -6,7 +6,7 @@ export function PersonaChip({
   label,
   size = 'sm',
 }: {
-  personaId: string;
+  personaId: string | undefined | null;
   label?: string;
   size?: 'xs' | 'sm' | 'md';
 }) {
@@ -22,7 +22,7 @@ export function PersonaChip({
         textTransform: 'none',
       }}
     >
-      {label ?? personaId}
+      {label ?? personaId ?? 'unknown'}
     </Badge>
   );
 }

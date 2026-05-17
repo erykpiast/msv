@@ -11,7 +11,8 @@ export function ObservationPanel({
   wg: WorkingGroupView;
   personaName: (id: string) => string;
 }) {
-  const { observations, researcher_reports } = wg;
+  const observations = wg.observations ?? [];
+  const researcher_reports = wg.researcher_reports ?? [];
 
   if (!observations.length) {
     return <Text c="dimmed" size="sm">No observations recorded.</Text>;
