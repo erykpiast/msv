@@ -9,19 +9,24 @@ const {
   runStructuredCall,
   webSearchTool,
   webFetchTool,
-  tokenUsage,
   extractWebSearches,
 } = require('../anthropic');
 const { RESEARCHER_TOOL_BUDGET, RESEARCHER_TURN_BUDGET, RESEARCHER_REPORT_JSON_SCHEMA } = require('../moves');
 const { RESEARCHER } = require('./prompts');
 const { appendLog } = require('../storage');
-const apiQueue = require('../api_queue');
 
 const EMIT_RESEARCHER_REPORT_TOOL = {
   name: 'emit_researcher_report',
   description: 'Emit your final structured researcher report.',
   input_schema: RESEARCHER_REPORT_JSON_SCHEMA,
 };
+
+// Researcher turns chain server-tool calls (web_search + web_fetch) inside a
+// single API turn. A typical successful turn observed in production takes
+// 90-150s of Anthropic-internal time. The default 60s SDK timeout caused 23 of
+// 25 researcher calls in one investigation to time out, yielding pipeline-wide
+// dead-ends. 180s comfortably covers the observed envelope with headroom.
+const RESEARCHER_TIMEOUT_MS = 180_000;
 
 async function runJointResearcher({
   client,
@@ -74,32 +79,30 @@ async function runJointResearcher({
     const forceEmit =
       usedToolCalls >= RESEARCHER_TOOL_BUDGET || turnIndex === RESEARCHER_TURN_BUDGET - 1;
 
-    const params = {
-      model,
+    if (forceEmit && usedToolCalls >= RESEARCHER_TOOL_BUDGET) {
+      messages.push({
+        role: 'user',
+        content:
+          'Tool budget exhausted; emit your researcher_report now via emit_researcher_report based on what you have.',
+      });
+    }
+
+    // Errors from runStructuredCall (SDK timeout, wall-clock cap, or
+    // forced-tool-missing) propagate out of this function. working_group.js
+    // wraps each researcher in withRetry, so a transient timeout gets one
+    // retry attempt and only after both fail does the pair surface a dead_end
+    // with the captured error.
+    const { response, usage } = await runStructuredCall({
+      client,
       system: RESEARCHER,
-      max_tokens: 4000,
       messages,
       tools,
-    };
-
-    if (forceEmit) {
-      params.tool_choice = { type: 'tool', name: 'emit_researcher_report' };
-      // Append a user prompt only if budget exhausted (not just last turn).
-      if (usedToolCalls >= RESEARCHER_TOOL_BUDGET) {
-        messages.push({
-          role: 'user',
-          content:
-            'Tool budget exhausted; emit your researcher_report now via emit_researcher_report based on what you have.',
-        });
-      }
-    }
-
-    const response = await apiQueue.enqueue(() => client.messages.create(params));
-    const usage = tokenUsage(response);
-    if (budget) {
-      budget.used_executor_calls = (budget.used_executor_calls || 0) + 1;
-      budget.used_total_tokens = (budget.used_total_tokens || 0) + usage.total;
-    }
+      forceTool: forceEmit ? 'emit_researcher_report' : undefined,
+      model,
+      maxTokens: 4000,
+      budget,
+      timeoutMs: RESEARCHER_TIMEOUT_MS,
+    });
 
     // Count server-side tool invocations (web_search, web_fetch) toward researcher budget.
     const serverToolUses = (response.content || []).filter((b) => b.type === 'server_tool_use');
