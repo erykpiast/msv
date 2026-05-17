@@ -3,7 +3,7 @@
 const log = require('./log');
 const debug = require('./debug');
 
-const NO_ATTACH = { attach: async () => async () => {} };
+const NO_ATTACH = { attach: async () => ({ cleanup: async () => {} }) };
 
 function loadDashboard() {
   return require('./dashboard');

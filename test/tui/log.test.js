@@ -63,7 +63,7 @@ const CASES = [
 for (const { event, expected } of CASES) {
   test(`log formats ${event.name} correctly`, async () => {
     const bus = createBus();
-    const cleanup = attach(bus);
+    const { cleanup } = attach(bus);
     const out = captureStdout(() => bus.emit(event.name, event));
     await cleanup();
     assert.equal(out.trim(), expected);
@@ -82,7 +82,7 @@ const VERBOSE_API_CASES = [
 for (const { event, expected } of VERBOSE_API_CASES) {
   test(`log formats ${event.name} correctly with verboseApi=true`, async () => {
     const bus = createBus();
-    const cleanup = attach(bus, { verboseApi: true });
+    const { cleanup } = attach(bus, { verboseApi: true });
     const out = captureStdout(() => bus.emit(event.name, event));
     await cleanup();
     assert.equal(out.trim(), expected);
@@ -90,7 +90,7 @@ for (const { event, expected } of VERBOSE_API_CASES) {
 
   test(`${event.name} is muted by default (verboseApi unset)`, async () => {
     const bus = createBus();
-    const cleanup = attach(bus);
+    const { cleanup } = attach(bus);
     const out = captureStdout(() => bus.emit(event.name, event));
     await cleanup();
     assert.equal(out, '');
@@ -99,7 +99,7 @@ for (const { event, expected } of VERBOSE_API_CASES) {
 
 test('api.call.start is muted when verboseApi=false', async () => {
   const bus = createBus();
-  const cleanup = attach(bus, { verboseApi: false });
+  const { cleanup } = attach(bus, { verboseApi: false });
   const out = captureStdout(() => bus.emit('api.call.start', { call_id: 1, model: 'claude-3' }));
   await cleanup();
   assert.equal(out, '');
@@ -107,7 +107,7 @@ test('api.call.start is muted when verboseApi=false', async () => {
 
 test('api.call.start is rendered when verboseApi=true', async () => {
   const bus = createBus();
-  const cleanup = attach(bus, { verboseApi: true });
+  const { cleanup } = attach(bus, { verboseApi: true });
   const out = captureStdout(() => bus.emit('api.call.start', { call_id: 1, model: 'claude-3' }));
   await cleanup();
   assert.ok(out.includes('call 1'));
@@ -116,7 +116,7 @@ test('api.call.start is rendered when verboseApi=true', async () => {
 
 test('unknown events are silently ignored', async () => {
   const bus = createBus();
-  const cleanup = attach(bus);
+  const { cleanup } = attach(bus);
   const out = captureStdout(() => bus.emit('some.unknown.event', { foo: 'bar' }));
   await cleanup();
   assert.equal(out, '');

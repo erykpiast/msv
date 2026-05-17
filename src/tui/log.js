@@ -84,7 +84,7 @@ function attach(bus, opts = {}) {
     if (!fmt) return;
     process.stdout.write(`${fmt(safeEnv)}\n`);
   });
-  return async () => off();
+  return { cleanup: async () => off() };
 }
 
 module.exports = { attach, FORMATTERS };

@@ -6,7 +6,7 @@ function attach(bus) {
   const off = bus.onAny((env) => {
     process.stdout.write(`${JSON.stringify(sanitizeEnvelope(env))}\n`);
   });
-  return async () => off();
+  return { cleanup: async () => off() };
 }
 
 module.exports = { attach };

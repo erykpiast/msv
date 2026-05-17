@@ -533,7 +533,7 @@ async function runOne(idea, client, { cancellationToken, tuiModule, tuiOpts } = 
     recordCleanup = attachRecorder(bus, { idea });
     if (tuiModule) {
       const tuiResult = await tuiModule.attach(bus, { idea, ...tuiOpts });
-      tuiCleanup = typeof tuiResult === 'function' ? tuiResult : tuiResult.cleanup;
+      tuiCleanup = tuiResult.cleanup;
     }
     await runPipeline(idea, client, { cancellationToken, bus });
     return { ok: true };

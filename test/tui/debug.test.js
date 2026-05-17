@@ -20,7 +20,7 @@ function captureStdout(fn) {
 test('debug attach writes one JSON line per event', async () => {
   const bus = createBus();
   bus.setIdea('idea-1');
-  const cleanup = attach(bus);
+  const { cleanup } = attach(bus);
 
   const out = captureStdout(() => {
     bus.emit('pipeline.start', { raw_capture: 'hello' });
@@ -40,7 +40,7 @@ test('debug attach writes one JSON line per event', async () => {
 
 test('debug output is terminated by newline', async () => {
   const bus = createBus();
-  const cleanup = attach(bus);
+  const { cleanup } = attach(bus);
   const out = captureStdout(() => bus.emit('pipeline.start', {}));
   await cleanup();
   assert.ok(out.endsWith('\n'));
@@ -48,7 +48,7 @@ test('debug output is terminated by newline', async () => {
 
 test('nested objects round-trip through JSON.stringify', async () => {
   const bus = createBus();
-  const cleanup = attach(bus);
+  const { cleanup } = attach(bus);
   const payload = { budget: { max: 100, used: 42 }, tags: ['a', 'b'] };
   const out = captureStdout(() => bus.emit('pipeline.start', payload));
   await cleanup();
