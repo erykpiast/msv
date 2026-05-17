@@ -393,6 +393,7 @@ async function runCrossPollinationReaction({
   targetAlignedQuestions = [],
   targetFindings = [],
   targetTerritory = null,
+  bus,
 }) {
   const system = buildSystemPrompt(CROSS_POLLINATION, persona);
 
@@ -469,6 +470,14 @@ async function runCrossPollinationReaction({
       await appendLog(idea.id, 'cross-pollination', {
         kind: 'response',
         payload: { stop_reason: response.stop_reason, usage, persona_id: persona.id },
+      });
+      if (bus) bus.emit('cross_pollination.reaction', {
+        persona_id: persona.id,
+        reactor_territory: reactingPair?.territory_id || null,
+        target_territory: targetTerritory || targetSubQuestion?.id || null,
+        type: raw.type,
+        references_claim_id: raw.references_claim_id,
+        confidence: Number(raw.confidence),
       });
       return {
         by_persona_id: persona.id,

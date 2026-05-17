@@ -69,7 +69,7 @@ function renderPairScores(personas) {
   return rows.join('\n');
 }
 
-async function runCoordinatorInitial({ client, idea, model, budget, personas }) {
+async function runCoordinatorInitial({ client, idea, model, budget, personas, bus }) {
   const personaSummary = renderPersonaSummary(personas);
   const pairScores = renderPairScores(personas);
   const validIds = new Set(personas.map((p) => p.id));
@@ -122,6 +122,11 @@ async function runCoordinatorInitial({ client, idea, model, budget, personas }) 
       usage,
       territory_count: territories.length,
     },
+  });
+
+  if (bus) bus.emit('coordinator.territories.emitted', {
+    count: territories.length,
+    names: territories.map((t) => t.name || t.id || t.territory_id),
   });
 
   return {

@@ -187,7 +187,7 @@ async function runWorkingGroup({
   budget,
   territory,
   personas,
-  onProgress,
+  bus,
   previousResult,
   wgProgressValue = 'pending',
   onCheckpoint,
@@ -195,11 +195,17 @@ async function runWorkingGroup({
 }) {
   const territoryId = territoryKey(territory);
   const safeTerritoryId = safeSlug(territoryId);
-  const name = territory.name || territoryId;
   const assignedPair = territory.assigned_pair || [];
   const pairPersonas = assignedPair
     .map((pid) => personas.find((p) => p.id === pid))
     .filter(Boolean);
+
+  if (bus) bus.emit('wg.start', {
+    territory_id: safeTerritoryId,
+    territory_name: territory.name,
+    assigned_pair: territory.assigned_pair || [],
+    distinctness_score: territory.pair_distinctness_score,
+  });
 
   const result = previousResult
     ? { ...previousResult }
@@ -220,9 +226,9 @@ async function runWorkingGroup({
       };
 
   // --- 5.4a Independent Ideation ---
+  if (bus) bus.emit('wg.ideation.start', { territory_id: safeTerritoryId });
   const ideationLog = `pair-${safeTerritoryId}-ideation`;
   if (!isSubStageComplete(wgProgressValue, 'ideation')) {
-    onProgress?.(`[${name}] ideation start`);
     const ideation = await withRetry(
       () =>
         Promise.all(
@@ -257,17 +263,24 @@ async function runWorkingGroup({
           ...cq,
         });
       }
+      if (bus) bus.emit('wg.ideation.persona.done', {
+        territory_id: safeTerritoryId,
+        persona_id: personaResult.persona_id,
+        candidate_count: personaResult.candidate_questions.length,
+      });
     }
-    onProgress?.(`[${name}] ideation done (${result.candidate_questions.length} candidates)`);
     if (cancellationToken?.requested) {
       throw new CancellationError(`cancelled at ${territoryId} ideation`);
     }
     await onCheckpoint?.({ partialResult: result, completedSubStage: 'ideation' });
-  } else {
-    onProgress?.(`[${name}] ideation cached (${result.candidate_questions.length} candidates)`);
   }
+  if (bus) bus.emit('wg.ideation.done', {
+    territory_id: safeTerritoryId,
+    total_candidates: result.candidate_questions.length,
+  });
 
   // --- 5.4b Adversarial Pre-check ---
+  if (bus) bus.emit('wg.adversarial.start', { territory_id: safeTerritoryId });
   const adversarialLog = `pair-${safeTerritoryId}-adversarial`;
   if (!isSubStageComplete(wgProgressValue, 'adversarial')) {
     try {
@@ -301,11 +314,15 @@ async function runWorkingGroup({
       throw new CancellationError(`cancelled at ${territoryId} adversarial`);
     }
     await onCheckpoint?.({ partialResult: result, completedSubStage: 'adversarial' });
-  } else {
-    onProgress?.(`[${name}] adversarial cached (${result.adversarial_marks.length} marks)`);
   }
+  if (bus) bus.emit('wg.adversarial.done', {
+    territory_id: safeTerritoryId,
+    mark_count: result.adversarial_marks.length,
+    partial: false,
+  });
 
   // --- 5.4c Alignment Debate ---
+  if (bus) bus.emit('wg.alignment.start', { territory_id: safeTerritoryId });
   const alignmentLog = `pair-${safeTerritoryId}-alignment`;
   if (!isSubStageComplete(wgProgressValue, 'alignment')) {
     let alignmentMoveCount = 0;
@@ -346,6 +363,13 @@ async function runWorkingGroup({
       alignmentHistory.push(moveRecord);
       result.moves.push(moveRecord);
       alignmentMoveCount += 1;
+      if (bus) bus.emit('wg.move', {
+        territory_id: safeTerritoryId,
+        phase: 'alignment',
+        move_id: moveRecord.move_id,
+        persona_id: persona.id,
+        type: move.type,
+      });
 
       // Drop eliminates the candidate; Defer marks it as "set aside" but does NOT
       // eliminate it (it remains in the surviving set so the deterministic post-step
@@ -369,17 +393,21 @@ async function runWorkingGroup({
       personas: pairPersonas,
     });
 
-    if (result.aligned_questions.length < 2) {
-      result.terminated_by = 'alignment_failure';
-      return result;
-    }
-
     if (cancellationToken?.requested) {
       throw new CancellationError(`cancelled at ${territoryId} alignment`);
     }
     await onCheckpoint?.({ partialResult: result, completedSubStage: 'alignment' });
-  } else {
-    onProgress?.(`[${name}] alignment cached (${result.aligned_questions.length} aligned)`);
+  }
+
+  if (bus) bus.emit('wg.alignment.done', {
+    territory_id: safeTerritoryId,
+    move_count: (result.moves || []).filter((m) => m.stage === 'alignment').length,
+    aligned_count: result.aligned_questions.length,
+  });
+
+  if (result.aligned_questions.length < 2) {
+    result.terminated_by = 'alignment_failure';
+    return result;
   }
 
   // --- 5.4d Researcher Delegation ---
@@ -391,8 +419,6 @@ async function runWorkingGroup({
   const researcherLog = `pair-${safeTerritoryId}-researcher`;
 
   if (!isSubStageComplete(wgProgressValue, 'researcher')) {
-    onProgress?.(`[${name}] researcher start`);
-
     async function researchOne(aq) {
       const attempt = await withRetry(
         () =>
@@ -404,6 +430,7 @@ async function runWorkingGroup({
             alignedQuestion: aq,
             territory,
             personaLenses,
+            bus,
           }),
         {
           logFirstError: (err) =>
@@ -448,13 +475,10 @@ async function runWorkingGroup({
       return result;
     }
 
-    onProgress?.(`[${name}] researcher done (${result.researcher_reports.length} reports)`);
     if (cancellationToken?.requested) {
       throw new CancellationError(`cancelled at ${territoryId} researcher`);
     }
     await onCheckpoint?.({ partialResult: result, completedSubStage: 'researcher' });
-  } else {
-    onProgress?.(`[${name}] researcher cached (${result.researcher_reports.length} reports)`);
   }
 
   // Compute useful reports and findings index (used by both observation and debate).
@@ -462,9 +486,9 @@ async function runWorkingGroup({
   const allFindings = result.researcher_reports.flatMap((r) => r.findings);
 
   // --- 5.4e Independent Observation ---
+  if (bus) bus.emit('wg.observation.start', { territory_id: safeTerritoryId });
   const observationLog = `pair-${safeTerritoryId}-observation`;
   if (!isSubStageComplete(wgProgressValue, 'observation')) {
-    onProgress?.(`[${name}] observation start`);
     // result.observations is always empty here: the skip-guard above only lets us
     // enter when the observation sub-stage hasn't been checkpointed yet, and the
     // sub-stage is atomic (no per-observation checkpointing).
@@ -536,19 +560,20 @@ async function runWorkingGroup({
       }
     }
 
-    onProgress?.(`[${name}] observation done (${result.observations.length} observations)`);
     if (cancellationToken?.requested) {
       throw new CancellationError(`cancelled at ${territoryId} observation`);
     }
     await onCheckpoint?.({ partialResult: result, completedSubStage: 'observation' });
-  } else {
-    onProgress?.(`[${name}] observation cached (${result.observations.length} observations)`);
   }
+  if (bus) bus.emit('wg.observation.done', {
+    territory_id: safeTerritoryId,
+    observation_count: result.observations.length,
+  });
 
   // --- 5.4f Pair Debate ---
+  if (bus) bus.emit('wg.debate.start', { territory_id: safeTerritoryId });
   const debateLog = `pair-${safeTerritoryId}-debate`;
   if (!isSubStageComplete(wgProgressValue, 'debate')) {
-    onProgress?.(`[${name}] debate start`);
     let debateMoveCount = 0;
     let debateHistory = [];
 
@@ -597,6 +622,14 @@ async function runWorkingGroup({
       };
       debateHistory.push(moveRecord);
       result.moves.push(moveRecord);
+      if (bus) bus.emit('wg.move', {
+        territory_id: safeTerritoryId,
+        phase: 'debate',
+        move_id: moveRecord.move_id,
+        persona_id: persona.id,
+        type: move.type,
+        confidence: move.confidence,
+      });
     }
 
     // Sequential debate turns.
@@ -677,6 +710,14 @@ async function runWorkingGroup({
       };
       debateHistory.push(moveRecord);
       result.moves.push(moveRecord);
+      if (bus) bus.emit('wg.move', {
+        territory_id: safeTerritoryId,
+        phase: 'debate',
+        move_id: moveRecord.move_id,
+        persona_id: persona.id,
+        type: move.type,
+        confidence: move.confidence,
+      });
       debateTurn += 1;
     }
 
@@ -697,10 +738,25 @@ async function runWorkingGroup({
     if (cancellationToken?.requested) {
       throw new CancellationError(`cancelled at ${territoryId} debate`);
     }
-  } else {
-    const debateMoveCount = (result.moves || []).filter((m) => m.stage === 'debate').length;
-    onProgress?.(`[${name}] debate cached (${debateMoveCount} moves)`);
   }
+
+  const debateMoveCountFinal = (result.moves || []).filter((m) => m.stage === 'debate').length;
+  if (bus) bus.emit('wg.debate.done', {
+    territory_id: safeTerritoryId,
+    move_count: debateMoveCountFinal,
+    claim_count: result.surviving_claims.length,
+    terminated_by: result.terminated_by,
+  });
+
+  if (bus) bus.emit('wg.end', {
+    territory_id: safeTerritoryId,
+    candidate_count: result.candidate_questions.length,
+    aligned_count: result.aligned_questions.length,
+    report_count: result.researcher_reports.length,
+    observation_count: result.observations.length,
+    claim_count: result.surviving_claims.length,
+    terminated_by: result.terminated_by,
+  });
 
   return result;
 }

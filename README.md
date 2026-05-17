@@ -47,6 +47,7 @@ Runs the v5 question-generation pipeline:
 7. Synthesizer produces the user-facing report, question landscape, and dead-end summary
 
 ```bash
+msv run [--all | <id>] [--tui=dashboard|log|debug|silent] [--verbose-api]
 msv run --all
 msv run 8db8e9bf-5cb7-4fda-a2a8-9796b0511f9d
 msv run 8db8e9bf-5cb7-4fda-a2a8-9796b0511f9d --restart
@@ -65,6 +66,19 @@ To abandon prior progress and start over, use `--restart`. The previous logs and
 Ideas written by older code (no `progress` field on `investigation`) are treated as "no resume anchor" — `msv run <id>` will print a notice and re-run from stage 1. Use `--restart` to archive their logs first.
 
 See [`specs/feat-investigation-resumption.md`](specs/feat-investigation-resumption.md) for the full design.
+
+#### Terminal output modes
+
+`msv run` emits its progress through a typed event bus (`src/bus.js`); exactly one renderer subscribes per invocation. Pick one with `--tui=<name>`:
+
+- `dashboard` — ink-rendered live dashboard (stage list, per-territory grid, budget header, recent-events tail). Default when stdout is a TTY.
+- `log` — flat `[level] [stage] message` lines, one per event. Default for non-TTY (CI, redirected stdout).
+- `debug` — every event flushed as one-line JSON. Use for grep/jq/replay.
+- `silent` — no listener; useful when piping events through a custom consumer.
+
+Auto-selection picks `log` if `CI` or `NO_TUI` is set, or if `process.stdout.isTTY` is false; otherwise `dashboard`. `--verbose-api` un-mutes the high-frequency `api.call.*` events in `log` mode (they are always on in `debug`, always aggregated in `dashboard`).
+
+**Known break in log format.** The legacy `→ <id> [N/7] …` / `→      …` prefixes are gone. Anything that greps `msv run` output for `→` will need to switch to the new `[info] [stage] …` shape. Machine consumers should use `--tui=debug` (JSON lines) or read `events.jsonl` directly.
 
 ### `msv inspect <id>`
 
@@ -118,6 +132,7 @@ Each idea is a directory under `~/.msv/`:
 ```
 ~/.msv/ideas/<uuid>/
 ├── index.json                              # full investigation transcript (atomic writes)
+├── events.jsonl                            # append-only event log; consumed by tools/stage-stats.js
 └── logs/
     ├── discovery.jsonl                     # raw API exchanges per stage
     ├── coordinator.jsonl

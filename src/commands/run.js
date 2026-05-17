@@ -31,6 +31,12 @@ const { aggregateForum } = require('../forum');
 const { runSynthesizer } = require('../agents/synthesizer');
 const { planResume } = require('../resume');
 const { CancellationError, classifyError, sanitiseMessage, actionableMessage } = require('../failure');
+const { createBus } = require('../bus');
+const { selectTui } = require('../tui');
+const { attachRecorder } = require('../event_recorder');
+const { setBus, resetStats } = require('../api_queue');
+
+const HEARTBEAT_MS = 15_000;
 
 function parseRunSelection(args) {
   const flags = { restart: false, all: false };
@@ -38,28 +44,31 @@ function parseRunSelection(args) {
   for (const arg of args) {
     if (arg === '--restart') flags.restart = true;
     else if (arg === '--all') flags.all = true;
+    else if (arg.startsWith('--tui=')) flags.tui = arg.slice('--tui='.length);
+    else if (arg === '--verbose-api') flags.verboseApi = true;
     else positional.push(arg);
   }
   if (flags.all && flags.restart) {
     return { mode: 'error', reason: '--restart is not allowed with --all' };
   }
   if (!flags.all && positional.length === 0) return { mode: 'usage' };
-  if (flags.all) return { mode: 'all' };
-  return { mode: 'single', id: positional[0], restartFlag: flags.restart };
+  const out = flags.all
+    ? { mode: 'all' }
+    : { mode: 'single', id: positional[0], restartFlag: flags.restart };
+  if (flags.tui !== undefined) out.tui = flags.tui;
+  if (flags.verboseApi) out.verboseApi = true;
+  return out;
 }
 
-function progress(line) {
-  process.stdout.write(`${line}\n`);
-}
-
-// Print "...still working (Ns)" every HEARTBEAT_MS while fn is in flight so
-// long stages (web_search, model calls) don't look stuck.
-const HEARTBEAT_MS = 15000;
-async function withHeartbeat(label, fn) {
+async function withHeartbeat(stage, bus, fn) {
   const start = Date.now();
   const timer = setInterval(() => {
-    const seconds = Math.round((Date.now() - start) / 1000);
-    process.stdout.write(`→      [${label}] …still working (${seconds}s)\n`);
+    if (bus) {
+      bus.emit('pipeline.stage.heartbeat', {
+        stage,
+        seconds: Math.round((Date.now() - start) / 1000),
+      });
+    }
   }, HEARTBEAT_MS);
   try {
     return await fn();
@@ -131,27 +140,14 @@ async function runWorkingGroupsConcurrently({
   personas,
   territories,
   cancellationToken,
+  bus,
 }) {
-  // Capture which territories were already complete BEFORE allSettled — used below
-  // to suppress the per-territory summary for cached ones (we already printed
-  // "(cached, complete)" for them). Can't infer from `inv.progress.working_groups`
-  // after the fact because the finalisation loop sets every fulfilled WG to
-  // 'complete' too.
-  const cachedTids = new Set();
-  for (const territory of territories) {
-    const tid = safeSlug(territory.id || territory.territory_id);
-    if ((inv.progress.working_groups[tid] || 'pending') === 'complete') {
-      cachedTids.add(tid);
-    }
-  }
-
   const settled = await Promise.allSettled(
     territories.map((territory) => {
       const tid = safeSlug(territory.id || territory.territory_id);
       const wgProgressValue = inv.progress.working_groups[tid] || 'pending';
       if (wgProgressValue === 'complete') {
         const existing = inv.pair_debates.find((d) => d.territory_id === tid);
-        progress(`→      [${territory.name || tid}] (cached, complete)`);
         return Promise.resolve(existing);
       }
       const previousResult = inv.pair_debates.find((d) => d.territory_id === tid) || null;
@@ -163,7 +159,7 @@ async function runWorkingGroupsConcurrently({
         budget: inv.budget,
         territory,
         personas,
-        onProgress: (msg) => progress(`→      ${msg}`),
+        bus,
         previousResult,
         wgProgressValue,
         cancellationToken,
@@ -200,34 +196,21 @@ async function runWorkingGroupsConcurrently({
     await writeIdea(idea);
   });
 
-  // Print summary for territories that ran (not cached).
   settled.forEach((result, index) => {
     const territory = territories[index];
-    const name = territory.name || territory.id || territory.territory_id;
-    const tid = safeSlug(territory.id || territory.territory_id);
-    if (cachedTids.has(tid)) return; // already printed "(cached, complete)" above
-    if (result.status === 'fulfilled' && result.value) {
-      const wg = result.value;
-      const subStagesSummary = [
-        `${wg.candidate_questions?.length || 0} candidates`,
-        `${wg.aligned_questions?.length || 0} aligned`,
-        `${wg.researcher_reports?.length || 0} reports`,
-        `${wg.observations?.length || 0} observations`,
-        `${(wg.moves || []).filter((m) => m.stage === 'debate').length} debate moves`,
-        `${wg.surviving_claims?.length || 0} claims`,
-        `(${wg.terminated_by})`,
-      ].join(', ');
-      progress(`→      [${name}] ${subStagesSummary}`);
-    } else if (result.status === 'rejected') {
+    if (result.status === 'rejected' && bus) {
+      // Always use territory id (never .name, which is a display label) and slug
+      // it so it lines up with the territory_id values emitted from the wg internals.
+      const territoryId = safeSlug(territory.id || territory.territory_id);
       const reason = result.reason?.message || String(result.reason);
-      progress(`→      [${name}] failed: ${reason}`);
+      bus.emit('wg.failed', { territory_id: territoryId, reason });
     }
   });
 
   return settled.filter((r) => r.status === 'fulfilled' && r.value).map((r) => r.value);
 }
 
-async function runPipeline(idea, client, { cancellationToken } = {}) {
+async function runPipeline(idea, client, { cancellationToken, bus } = {}) {
   const inv = idea.investigation;
   idea.status = 'investigating';
   if (!inv.started_at) inv.started_at = new Date().toISOString();
@@ -238,50 +221,54 @@ async function runPipeline(idea, client, { cancellationToken } = {}) {
   await ensureIdeaDirs(idea.id);
   await writeIdea(idea);
 
-  const id = idea.id;
+  if (bus) bus.emit('pipeline.start', {
+    idea_id: idea.id,
+    raw_capture: idea.raw_capture,
+    model: MODEL,
+    synthesizer_model: SYNTHESIZER_MODEL,
+    budget: { ...inv.budget },
+    resume_from: inv.progress.current_stage,
+  });
 
   // ─────────────────── [1/7] discovery ───────────────────
   if (inv.progress.current_stage === '1_discovery') {
-    progress(`→ ${id} [1/7] perspective discovery (interrogative posture)…`);
-    const discovery = await withHeartbeat('discovery', () =>
+    if (bus) bus.emit('pipeline.stage.start', { stage: 'discovery', stage_index: 1, total_stages: 7 });
+    const discovery = await withHeartbeat('discovery', bus, () =>
       runPerspectiveDiscovery({
         client,
         idea,
         model: inv.model,
         budget: inv.budget,
-        onProgress: (msg) => progress(`→      ${msg}`),
+        bus,
       })
     );
     inv.perspective_discovery.search_queries = discovery.search_queries;
     inv.perspective_discovery.candidate_personas = discovery.candidate_personas;
-    progress(
-      `→      surveyed ${discovery.search_queries.length} sources, generated ${discovery.candidate_personas.length} candidate personas`
-    );
+    if (bus) bus.emit('pipeline.stage.end', {
+      stage: 'discovery',
+      summary: {
+        searches: discovery.search_queries.length,
+        candidates: discovery.candidate_personas.length,
+      },
+    });
     inv.progress.current_stage = '2_diversity';
     await checkpoint(idea, cancellationToken);
-  } else {
-    progress(
-      `→ ${id} [1/7] discovery cached (${inv.perspective_discovery.candidate_personas.length} personas)`
-    );
   }
 
   // ─────────────────── [2/7] diversity ───────────────────
   if (inv.progress.current_stage === '2_diversity') {
-    progress(`→ ${id} [2/7] diversity selection…`);
+    if (bus) bus.emit('pipeline.stage.start', { stage: 'diversity', stage_index: 2, total_stages: 7 });
     const selectedDiscovered = selectDiversePersonas(
       inv.perspective_discovery.candidate_personas,
       { count: 5 }
     );
     inv.perspective_discovery.selected_persona_ids = selectedDiscovered.map((p) => p.id);
-    progress(
-      `→      selected ${selectedDiscovered.length} personas (+ ${FIXED_PERSONAS.map((p) => p.role || p.id).join(', ')})`
-    );
+    if (bus) bus.emit('pipeline.stage.end', {
+      stage: 'diversity',
+      summary: { selected: selectedDiscovered.length, fixed: FIXED_PERSONAS.length },
+    });
     inv.progress.current_stage = '3_coordinator';
     await checkpoint(idea, cancellationToken);
-  } else {
-    progress(
-      `→ ${id} [2/7] diversity cached (${inv.perspective_discovery.selected_persona_ids?.length || 0} selected)`
-    );
   }
 
   // Reconstruct personas from persisted selected_persona_ids (used from here on regardless of
@@ -293,14 +280,15 @@ async function runPipeline(idea, client, { cancellationToken } = {}) {
 
   // ─────────────────── [3/7] coordinator ───────────────────
   if (inv.progress.current_stage === '3_coordinator') {
-    progress(`→ ${id} [3/7] coordinator decomposing into territories…`);
-    const initialDecomposition = await withHeartbeat('coordinator', () =>
+    if (bus) bus.emit('pipeline.stage.start', { stage: 'coordinator', stage_index: 3, total_stages: 7 });
+    const initialDecomposition = await withHeartbeat('coordinator', bus, () =>
       runCoordinatorInitial({
         client,
         idea,
         model: inv.model,
         budget: inv.budget,
         personas,
+        bus,
       })
     );
     const territories =
@@ -314,14 +302,12 @@ async function runPipeline(idea, client, { cancellationToken } = {}) {
       const tid = safeSlug(t.id || t.territory_id);
       inv.progress.working_groups[tid] = inv.progress.working_groups[tid] || 'pending';
     }
-    const territoryNames = territories.map((t) => t.name || t.id || t.territory_id).join(', ');
-    progress(`→      ${territories.length} territories: ${territoryNames}`);
+    if (bus) bus.emit('pipeline.stage.end', {
+      stage: 'coordinator',
+      summary: { territories: territories.length },
+    });
     inv.progress.current_stage = '4_working_groups';
     await checkpoint(idea, cancellationToken);
-  } else {
-    progress(
-      `→ ${id} [3/7] coordinator cached (${inv.coordinator_decisions.initial?.territories?.length || 0} territories)`
-    );
   }
 
   const territories = inv.coordinator_decisions.initial.territories;
@@ -329,10 +315,13 @@ async function runPipeline(idea, client, { cancellationToken } = {}) {
   // ─────────────────── [4/7] working groups ───────────────────
   let workingGroups;
   if (inv.progress.current_stage === '4_working_groups') {
-    progress(
-      `→ ${id} [4/7] working groups (${territories.length} parallel pairs · six sub-stages each)…`
-    );
-    workingGroups = await withHeartbeat('working-groups', () =>
+    if (bus) bus.emit('pipeline.stage.start', {
+      stage: 'working_groups',
+      stage_index: 4,
+      total_stages: 7,
+      territory_count: territories.length,
+    });
+    workingGroups = await withHeartbeat('working_groups', bus, () =>
       runWorkingGroupsConcurrently({
         client,
         idea,
@@ -340,21 +329,26 @@ async function runPipeline(idea, client, { cancellationToken } = {}) {
         personas,
         territories,
         cancellationToken,
+        bus,
       })
     );
-    // Results already merged into inv.pair_debates by onCheckpoint callbacks.
+    if (bus) bus.emit('pipeline.stage.end', {
+      stage: 'working_groups',
+      summary: { completed: workingGroups.length, total: territories.length },
+    });
     inv.progress.current_stage = '5_cross_pollination';
     await checkpoint(idea, cancellationToken);
   } else {
     workingGroups = inv.pair_debates;
-    progress(
-      `→ ${id} [4/7] working groups cached (${inv.pair_debates.length}/${territories.length})`
-    );
   }
 
   // ─────────────────── [5/7] cross-pollination ───────────────────
   if (inv.progress.current_stage === '5_cross_pollination') {
-    progress(`→ ${id} [5/7] cross-pollination round…`);
+    if (bus) bus.emit('pipeline.stage.start', {
+      stage: 'cross_pollination',
+      stage_index: 5,
+      total_stages: 7,
+    });
     const livePairs = workingGroups
       .filter(
         (wg) =>
@@ -374,7 +368,7 @@ async function runPipeline(idea, client, { cancellationToken } = {}) {
     let reactionTotal = 0;
     if (livePairs.length >= 2) {
       const assignment = selectReactorPermutation(livePairs, personas);
-      const perPairReactions = await withHeartbeat('cross-pollination', () =>
+      const perPairReactions = await withHeartbeat('cross_pollination', bus, () =>
         Promise.all(
           livePairs.map(async (targetPair, i) => {
             const reactorIdx = assignment[i];
@@ -402,6 +396,7 @@ async function runPipeline(idea, client, { cancellationToken } = {}) {
                   targetAlignedQuestions,
                   targetFindings,
                   targetTerritory: targetPair.workingGroup.territory_id,
+                  bus,
                 })
               )
             );
@@ -431,28 +426,31 @@ async function runPipeline(idea, client, { cancellationToken } = {}) {
       inv.cross_pollination = [];
     }
 
-    progress(`→      ${reactionTotal} reactions collected`);
+    if (bus) bus.emit('cross_pollination.done', { reaction_count: reactionTotal });
 
     const totalSurviving = inv.pair_debates.reduce(
       (n, d) => n + (d.surviving_claims?.length || 0),
       0
     );
-    if (totalSurviving === 0) {
-      progress(`→      WARNING: no surviving claims; synthesis will be empty`);
+    if (totalSurviving === 0 && bus) {
+      bus.emit('pipeline.stage.progress', {
+        stage: 'cross_pollination',
+        message: 'WARNING: no surviving claims; synthesis will be empty',
+      });
     }
 
+    if (bus) bus.emit('pipeline.stage.end', {
+      stage: 'cross_pollination',
+      summary: { reactions: reactionTotal },
+    });
     inv.progress.current_stage = '6_forum';
     await checkpoint(idea, cancellationToken);
-  } else {
-    progress(
-      `→ ${id} [5/7] cross-pollination cached (${inv.cross_pollination?.length || 0} entries)`
-    );
   }
 
   // ─────────────────── [6/7] forum ───────────────────
   if (inv.progress.current_stage === '6_forum') {
-    progress(`→ ${id} [6/7] forum aggregation…`);
-    const forum = await withHeartbeat('forum', () =>
+    if (bus) bus.emit('pipeline.stage.start', { stage: 'forum', stage_index: 6, total_stages: 7 });
+    const forum = await withHeartbeat('forum', bus, () =>
       aggregateForum({
         client,
         idea,
@@ -460,24 +458,28 @@ async function runPipeline(idea, client, { cancellationToken } = {}) {
         budget: inv.budget,
         pairDebates: inv.pair_debates,
         crossPollination: inv.cross_pollination,
+        bus,
       })
     );
     inv.forum = forum;
     const contradictionCount = forum.nodes.filter((n) => n.contradiction_with_node_id).length;
     const deadEndCount = (forum.dead_end_questions || []).length;
-    progress(
-      `→      ${forum.nodes.length} nodes, ${contradictionCount} contradictions surfaced, ${deadEndCount} dead-end questions preserved`
-    );
+    if (bus) bus.emit('pipeline.stage.end', {
+      stage: 'forum',
+      summary: {
+        nodes: forum.nodes.length,
+        contradictions: contradictionCount,
+        dead_ends: deadEndCount,
+      },
+    });
     inv.progress.current_stage = '7_synthesis';
     await checkpoint(idea, cancellationToken);
-  } else {
-    progress(`→ ${id} [6/7] forum cached (${inv.forum?.nodes?.length || 0} nodes)`);
   }
 
   // ─────────────────── [7/7] synthesis ───────────────────
   if (inv.progress.current_stage === '7_synthesis') {
-    progress(`→ ${id} [7/7] synthesis (haiku)…`);
-    const synthesis = await withHeartbeat('synthesis', () =>
+    if (bus) bus.emit('pipeline.stage.start', { stage: 'synthesis', stage_index: 7, total_stages: 7 });
+    const synthesis = await withHeartbeat('synthesis', bus, () =>
       runSynthesizer({
         client,
         idea,
@@ -486,6 +488,7 @@ async function runPipeline(idea, client, { cancellationToken } = {}) {
         forum: inv.forum,
         personas,
         pairDebates: inv.pair_debates,
+        bus,
       })
     );
     inv.synthesis = {
@@ -500,27 +503,42 @@ async function runPipeline(idea, client, { cancellationToken } = {}) {
     inv.progress.current_stage = 'complete';
     inv.last_failure = null;
     idea.status = 'ready';
+    if (bus) bus.emit('pipeline.stage.end', { stage: 'synthesis', summary: {} });
     await checkpoint(idea, cancellationToken);
-  } else {
-    progress(`→ ${id} [7/7] synthesis cached`);
   }
 
-  const queueStats = typeof getStats === 'function' ? getStats() : null;
-  const queueInfo = queueStats ? ` (queue: ${queueStats.retried} retries)` : '';
-  progress(
-    `✓ ${id} ready  (used ${inv.budget.used_executor_calls}/${inv.budget.max_executor_calls} executor calls, ${inv.budget.used_total_tokens}/${inv.budget.max_total_tokens} tokens${queueInfo})`
-  );
+  if (bus) {
+    const queueStats = typeof getStats === 'function' ? getStats() : null;
+    bus.emit('pipeline.complete', {
+      idea_id: idea.id,
+      ok: true,
+      used_executor_calls: inv.budget.used_executor_calls,
+      used_total_tokens: inv.budget.used_total_tokens,
+      used_researcher_tool_calls: inv.budget.used_researcher_tool_calls,
+      retries: queueStats?.retried || 0,
+    });
+  }
 }
 
-async function runOne(idea, client, { cancellationToken } = {}) {
+async function runOne(idea, client, { cancellationToken, tuiModule, tuiOpts } = {}) {
+  const bus = createBus();
+  bus.setIdea(idea.id);
+  resetStats();
+  setBus(bus);
+
+  let recordCleanup = async () => {};
+  let tuiCleanup = async () => {};
+
   try {
-    await runPipeline(idea, client, { cancellationToken });
+    recordCleanup = attachRecorder(bus, { idea });
+    if (tuiModule) {
+      const tuiResult = await tuiModule.attach(bus, { idea, ...tuiOpts });
+      tuiCleanup = tuiResult.cleanup;
+    }
+    await runPipeline(idea, client, { cancellationToken, bus });
     return { ok: true };
   } catch (error) {
     const reason = classifyError(error);
-    // Defensive: idea.investigation may be null if the pipeline threw before
-    // initialising it (corrupted-data path). Build a fresh shell so we can
-    // still persist last_failure rather than crashing in the catch handler.
     if (!idea.investigation) idea.investigation = freshInvestigation();
     const inv = idea.investigation;
     const stage = inv?.progress?.current_stage || 'unknown';
@@ -540,8 +558,22 @@ async function runOne(idea, client, { cancellationToken } = {}) {
         `✗ ${idea.id} also failed to persist last_failure: ${writeErr.message}\n`
       );
     }
-    process.stdout.write(`${actionableMessage({ id: idea.id, ...inv.last_failure })}\n`);
+    if (bus) {
+      bus.emit('pipeline.failed', {
+        stage,
+        territory_id: tid,
+        sub_stage: subStage,
+        reason,
+        error_message: sanitiseMessage(error),
+        error_stack: error?.stack || '',
+        actionable_message: actionableMessage({ id: idea.id, ...inv.last_failure }),
+      });
+    }
     return { ok: false, error };
+  } finally {
+    if (tuiCleanup) await tuiCleanup();
+    if (recordCleanup) await recordCleanup();
+    setBus(null);
   }
 }
 
@@ -571,7 +603,9 @@ function installSigintHandler(cancellationToken) {
 async function runRunCommand(args) {
   const selection = parseRunSelection(args);
   if (selection.mode === 'usage') {
-    process.stdout.write('Usage: msv run [--all | <id> [--restart]]\n');
+    process.stdout.write(
+      'Usage: msv run [--all | <id> [--restart]] [--tui=dashboard|log|debug|silent] [--verbose-api]\n'
+    );
     process.exitCode = 1;
     return;
   }
@@ -582,6 +616,13 @@ async function runRunCommand(args) {
   }
 
   await ensureStorageDirs();
+
+  const tuiModule = selectTui({
+    explicit: selection.tui,
+    isStdoutTty: process.stdout.isTTY,
+    isStdinTty: process.stdin.isTTY,
+  });
+  const tuiOpts = { verboseApi: !!selection.verboseApi };
 
   if (selection.mode === 'all') {
     const pendingIdeas = await listIdeasByStatus('pending');
@@ -595,7 +636,7 @@ async function runRunCommand(args) {
       const cancellationToken = { requested: false };
       const uninstall = installSigintHandler(cancellationToken);
       try {
-        const result = await runOne(idea, client, { cancellationToken });
+        const result = await runOne(idea, client, { cancellationToken, tuiModule, tuiOpts });
         if (result.ok) readyCount += 1;
         if (cancellationToken.requested) break;
       } finally {
@@ -626,24 +667,24 @@ async function runRunCommand(args) {
       process.stdout.write(`skipped ${selection.id}\n`);
       return;
     }
-    progress(`restart requested; archiving prior state to ${ideaDir(idea.id)}/.attempts/`);
+    process.stdout.write(`restart requested; archiving prior state to ${ideaDir(idea.id)}/.attempts/\n`);
     await performRestart(idea);
   } else if (plan.mode === 'restart') {
-    progress(`restart requested; archiving prior state to ${ideaDir(idea.id)}/.attempts/`);
+    process.stdout.write(`restart requested; archiving prior state to ${ideaDir(idea.id)}/.attempts/\n`);
     await performRestart(idea);
   } else if (plan.mode === 'fresh' && idea.status === 'investigating') {
-    progress(`→ ${idea.id} ${plan.summary}`);
+    process.stdout.write(`→ ${idea.id} ${plan.summary}\n`);
     idea.investigation = freshInvestigation();
     idea.status = 'pending';
     await writeIdea(idea);
   } else if (plan.mode === 'resume') {
-    progress(`→ ${idea.id} ${plan.summary}`);
+    process.stdout.write(`→ ${idea.id} ${plan.summary}\n`);
     if (idea.investigation?.last_failure) {
       const f = idea.investigation.last_failure;
       const where = [f.stage, f.territory_id && `territory ${f.territory_id}`, f.sub_stage]
         .filter(Boolean)
         .join(' / ');
-      progress(`   (prior failure: ${f.reason} at ${where}, ${f.occurred_at})`);
+      process.stdout.write(`   (prior failure: ${f.reason} at ${where}, ${f.occurred_at})\n`);
     }
   }
 
@@ -652,7 +693,7 @@ async function runRunCommand(args) {
   const client = createClient();
   let readyCount = 0;
   try {
-    const result = await runOne(idea, client, { cancellationToken });
+    const result = await runOne(idea, client, { cancellationToken, tuiModule, tuiOpts });
     if (result.ok) readyCount += 1;
   } finally {
     uninstall();

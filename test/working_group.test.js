@@ -1,5 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const { selectAlignedQuestions, runWorkingGroup, isSubStageComplete, SUBSTAGE_ORDER } = require('../src/working_group');
 const { CancellationError } = require('../src/failure');
 
@@ -414,4 +416,101 @@ test('aligned_id is shaped aq_<candidate>_<NNN>', () => {
   for (const r of result) {
     assert.match(r.aligned_id, /^aq_[A-Za-z0-9_-]+_\d{3}$/);
   }
+});
+
+// --- Bus emit contract tests ---
+//
+// Rationale: a full integration test would require mocking client.messages.create
+// for every persona/stage (ideation × 2, adversarial × 2, alignment moves × N,
+// researcher × M, observation × 2M, debate moves × K). That mock surface is
+// large and brittle.
+//
+// Per the spec's pragmatic stance (§10.6), a grep-based contract test catches
+// the most-likely regression — a developer deleting an emit site — without
+// running the pipeline. We read src/working_group.js and assert that every
+// event documented in spec §10.6 still appears as a literal bus.emit('<name>')
+// substring. Researcher events are emitted from src/agents/researcher.js, so
+// they're checked against that file instead.
+test('working_group.js emits every required event from spec §10.6', () => {
+  const wgSrc = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'working_group.js'),
+    'utf8'
+  );
+  // Spec §10.6 — events emitted directly inside runWorkingGroup.
+  const REQUIRED_WG = [
+    'wg.start',
+    'wg.ideation.start',
+    'wg.ideation.persona.done',
+    'wg.ideation.done',
+    'wg.adversarial.start',
+    'wg.adversarial.done',
+    'wg.alignment.start',
+    'wg.alignment.done',
+    'wg.move',
+    'wg.observation.start',
+    'wg.observation.done',
+    'wg.debate.start',
+    'wg.debate.done',
+    'wg.end',
+  ];
+  for (const name of REQUIRED_WG) {
+    const pattern = new RegExp(`bus\\.emit\\(\\s*['"]${name.replace(/\./g, '\\.')}['"]`);
+    assert.match(
+      wgSrc,
+      pattern,
+      `working_group.js no longer emits '${name}' — spec §10.6 regression`
+    );
+  }
+});
+
+test('researcher.js emits every required wg.researcher.* event from spec §10.6', () => {
+  const researcherSrc = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'agents', 'researcher.js'),
+    'utf8'
+  );
+  const REQUIRED_RESEARCHER = [
+    'wg.researcher.start',
+    'wg.researcher.turn',
+    'wg.researcher.web_search',
+    'wg.researcher.web_fetch',
+    'wg.researcher.done',
+  ];
+  for (const name of REQUIRED_RESEARCHER) {
+    const pattern = new RegExp(`bus\\.emit\\(\\s*['"]${name.replace(/\./g, '\\.')}['"]`);
+    assert.match(
+      researcherSrc,
+      pattern,
+      `researcher.js no longer emits '${name}' — spec §10.6 regression`
+    );
+  }
+});
+
+// Document the canonical event order from spec §10.6. This is a comment-only
+// test: it codifies expectations the integration test would assert if mocking
+// the full client surface were feasible. Keeping it pinned here makes the
+// expected sequence reviewable in code.
+test('spec §10.6 — documented event order for a successful working group', () => {
+  // The expected sequence is:
+  //   wg.start
+  //   wg.ideation.start
+  //   wg.ideation.persona.done × P  (P = personas in pair, typically 2)
+  //   wg.ideation.done
+  //   wg.adversarial.start
+  //   wg.adversarial.done
+  //   wg.alignment.start
+  //   wg.move × N                   (phase: alignment)
+  //   wg.alignment.done
+  //   wg.researcher.start × M
+  //   (interleaved wg.researcher.turn / web_search / web_fetch per researcher)
+  //   wg.researcher.done × M
+  //   wg.observation.start
+  //   wg.observation.done
+  //   wg.debate.start
+  //   wg.move × K                   (phase: debate)
+  //   wg.debate.done
+  //   wg.end
+  //
+  // The previous two tests assert each emit site exists. Future work: replace
+  // this comment with a real integration test once the LLM mock harness lands.
+  assert.ok(true, 'documented; emit-site existence verified by sibling tests');
 });

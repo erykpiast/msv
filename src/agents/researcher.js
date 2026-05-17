@@ -36,6 +36,7 @@ async function runJointResearcher({
   alignedQuestion,
   territory,
   personaLenses = [],
+  bus,
 }) {
   const aqId = alignedQuestion.aligned_id;
   const territoryId = territory.id || territory.territory_id;
@@ -75,6 +76,12 @@ async function runJointResearcher({
     payload: { aligned_id: aqId, question: alignedQuestion.question },
   });
 
+  if (bus) bus.emit('wg.researcher.start', {
+    territory_id: territoryId,
+    aligned_id: aqId,
+    question: alignedQuestion.question,
+  });
+
   while (turnIndex < RESEARCHER_TURN_BUDGET) {
     const forceEmit =
       usedToolCalls >= RESEARCHER_TOOL_BUDGET || turnIndex === RESEARCHER_TURN_BUDGET - 1;
@@ -112,6 +119,26 @@ async function runJointResearcher({
         (budget.used_researcher_tool_calls || 0) + serverToolUses.length;
     }
 
+    for (const block of serverToolUses) {
+      if (block.name === 'web_search' && bus) {
+        bus.emit('wg.researcher.web_search', {
+          territory_id: territoryId,
+          aligned_id: aqId,
+          query: block.input?.query || '',
+        });
+      }
+      if (block.name === 'web_fetch' && bus) {
+        try {
+          const url = new URL(block.input?.url || '');
+          bus.emit('wg.researcher.web_fetch', {
+            territory_id: territoryId,
+            aligned_id: aqId,
+            url: url.hostname,
+          });
+        } catch { /* invalid URL, skip */ }
+      }
+    }
+
     await appendLog(idea.id, logFile, {
       kind: 'turn',
       payload: {
@@ -140,6 +167,15 @@ async function runJointResearcher({
       });
     }
 
+    if (bus) bus.emit('wg.researcher.turn', {
+      territory_id: territoryId,
+      aligned_id: aqId,
+      turn_index: turnIndex,
+      stop_reason: response.stop_reason,
+      server_tool_calls: serverToolUses.length,
+      forced: forceEmit,
+    });
+
     // Check for the final report tool call.
     const reportBlock = (response.content || []).find(
       (b) => b.type === 'tool_use' && b.name === 'emit_researcher_report'
@@ -152,6 +188,12 @@ async function runJointResearcher({
           outcome: reportBlock.input?.outcome,
           finding_count: (reportBlock.input?.findings || []).length,
         },
+      });
+      if (bus) bus.emit('wg.researcher.done', {
+        territory_id: territoryId,
+        aligned_id: aqId,
+        outcome: reportBlock.input?.outcome,
+        finding_count: (reportBlock.input?.findings || []).length,
       });
       return reportBlock.input;
     }

@@ -47,8 +47,6 @@ const EMIT_PERSONAS_TOOL = {
   },
 };
 
-// Stream a messages.create with progress callback for incremental visibility.
-// Returns the final assembled Message (same shape as non-stream create).
 async function streamWithProgress(client, params, onContentBlock) {
   const stream = client.messages.stream(params);
   if (onContentBlock) {
@@ -67,7 +65,7 @@ async function streamWithProgress(client, params, onContentBlock) {
 // whole call when EVERY web_search returned a retryable error (e.g. upstream
 // rate-limited). Partial success skips retry — the model has enough context
 // and Turn 2's forced-emit handles persona generation regardless.
-async function runPerspectiveDiscovery({ client, idea, model, budget, onProgress }) {
+async function runPerspectiveDiscovery({ client, idea, model, budget, bus }) {
   const rawCapture = idea.raw_capture;
 
   await appendLog(idea.id, 'discovery', {
@@ -83,24 +81,21 @@ async function runPerspectiveDiscovery({ client, idea, model, budget, onProgress
     },
   ];
 
+  let lastSearchQuery = null;
   const turn1OnBlock = (block) => {
-    if (!onProgress) return;
+    if (!bus) return;
     if (block.type === 'server_tool_use' && block.name === 'web_search') {
-      onProgress(`web_search: ${block.input?.query || '(no query)'}`);
+      lastSearchQuery = block.input?.query || null;
+      bus.emit('discovery.web_search.start', { query: lastSearchQuery });
     } else if (block.type === 'web_search_tool_result') {
       const c = block.content;
-      if (isWebSearchErrorContent(c)) {
-        const code = !Array.isArray(c) ? c?.error_code : c.find((x) => x?.type === 'web_search_tool_result_error')?.error_code;
-        onProgress(`web_search ERROR: ${code || 'unknown'}`);
-      } else {
-        const count = Array.isArray(c)
-          ? c.filter((r) => r?.type === 'web_search_result').length
-          : 0;
-        onProgress(`web_search returned ${count} results`);
-      }
+      const count = !isWebSearchErrorContent(c) && Array.isArray(c)
+        ? c.filter((r) => r?.type === 'web_search_result').length
+        : 0;
+      bus.emit('discovery.web_search.result', { query: lastSearchQuery, count });
     } else if (block.type === 'tool_use' && block.name === 'emit_personas') {
       const n = (block.input?.candidate_personas || []).length;
-      onProgress(`emit_personas (${n} candidates)`);
+      bus.emit('discovery.emit_personas', { count: n, retry: false });
     }
   };
 
@@ -124,7 +119,7 @@ async function runPerspectiveDiscovery({ client, idea, model, budget, onProgress
           turn1OnBlock
         )
       ),
-    onAttempt: async ({ attempt, maxAttempts, response, summary }) => {
+    onAttempt: async ({ attempt, response, summary }) => {
       const u = tokenUsage(response);
       if (budget) {
         budget.used_executor_calls = (budget.used_executor_calls || 0) + 1;
@@ -134,11 +129,6 @@ async function runPerspectiveDiscovery({ client, idea, model, budget, onProgress
         kind: 'web_search_attempt',
         payload: { turn_index: 0, attempt, usage: u, ...summary },
       });
-      if (onProgress && summary.retryable_error_count > 0 && attempt < maxAttempts) {
-        onProgress(
-          `web_search retry: attempt ${attempt} had ${summary.retryable_error_count} retryable errors`
-        );
-      }
     },
   });
   const firstUsage = tokenUsage(firstResponse);
@@ -212,10 +202,10 @@ async function runPerspectiveDiscovery({ client, idea, model, budget, onProgress
           tool_choice: { type: 'tool', name: 'emit_personas' },
         },
         (block) => {
-          if (!onProgress) return;
+          if (!bus) return;
           if (block.type === 'tool_use' && block.name === 'emit_personas') {
             const n = (block.input?.candidate_personas || []).length;
-            onProgress(`emit_personas retry (${n} candidates)`);
+            bus.emit('discovery.emit_personas', { count: n, retry: true });
           }
         }
       )

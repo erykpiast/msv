@@ -119,3 +119,48 @@ test('non-retryable 4xx surfaces immediately without retrying', async () => {
   const stats = queue.getStats();
   assert.equal(stats.retried, 0);
 });
+
+test('enqueue drains a long burst at CONCURRENCY=6 without leaking inflight', async () => {
+  // Regression test for the deadlock that surfaced after ~119 calls in a v5
+  // run: every release-with-waiter used to leak +1 to inflight, eventually
+  // pinning inflight ≥ CONCURRENCY with no in-flight callers left to drain
+  // the queue. After the fix, a burst of N >> CONCURRENCY calls must all
+  // resolve and a follow-up call after the burst must acquire its slot
+  // immediately (i.e. inflight is back to 0).
+  const { enqueue, getStats } = loadFreshQueue();
+
+  const N = 150;
+  const stillBusy = () => getStats().inflight > 0 || getStats().queued > 0;
+
+  await Promise.all(
+    Array.from({ length: N }, (_, i) =>
+      enqueue(() =>
+        // Tiny async wait to force interleaving without slowing the test.
+        new Promise((r) => setImmediate(() => r({ ok: true, id: i })))
+      )
+    )
+  );
+
+  const stats = getStats();
+  assert.equal(stats.inflight, 0, `inflight leaked: ${stats.inflight}`);
+  assert.equal(stats.queued, 0, `queued leaked: ${stats.queued}`);
+  assert.equal(stats.completed, N);
+
+  // Sanity: a fresh call after the burst should acquire immediately, not hang.
+  // If this hangs, the test runner will time out — failure mode mirrors the
+  // production deadlock.
+  const followup = await enqueue(() => Promise.resolve({ ok: true }));
+  assert.equal(followup.ok, true);
+  assert.equal(getStats().inflight, 0);
+  assert.ok(!stillBusy());
+});
+
+test('failed calls release their slot', async () => {
+  const { enqueue, getStats } = loadFreshQueue();
+
+  await assert.rejects(
+    enqueue(() => Promise.reject(new Error('boom'))),
+    /boom/
+  );
+  assert.equal(getStats().inflight, 0);
+});
