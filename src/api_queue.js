@@ -15,6 +15,8 @@
 
 'use strict';
 
+const { WallClockCapError } = require('./failure');
+
 const CONCURRENCY = 6;
 const MAX_RETRIES = 5;
 const BACKOFF_BASE_MS = 1_000;
@@ -140,11 +142,10 @@ async function runWithRetries(fn, startedAt, perAttemptTimeoutMs, wallClockMaxMs
       }
       const elapsed = Date.now() - startedAt;
       if (elapsed >= wallClockMaxMs) {
-        const stallError = new Error(
-          `API call exceeded wall-clock cap (${wallClockMaxMs}ms) after ${attempt} retries: ${error.message}`
+        throw new WallClockCapError(
+          `API call exceeded wall-clock cap (${wallClockMaxMs}ms) after ${attempt} retries: ${error.message}`,
+          { cause: error }
         );
-        stallError.cause = error;
-        throw stallError;
       }
       retried += 1;
       const wait = Math.min(retryAfterMs(error, attempt), wallClockMaxMs - elapsed);
