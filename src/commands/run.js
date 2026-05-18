@@ -528,6 +528,7 @@ async function runOne(idea, client, { cancellationToken, tuiModule, tuiOpts } = 
 
   let recordCleanup = async () => {};
   let tuiCleanup = async () => {};
+  let failureReport = null;
 
   try {
     recordCleanup = attachRecorder(bus, { idea });
@@ -558,6 +559,8 @@ async function runOne(idea, client, { cancellationToken, tuiModule, tuiOpts } = 
         `✗ ${idea.id} also failed to persist last_failure: ${writeErr.message}\n`
       );
     }
+    const actionable = actionableMessage({ id: idea.id, ...inv.last_failure });
+    failureReport = `${actionable}\n  ${inv.last_failure.error_message}\n`;
     if (bus) {
       bus.emit('pipeline.failed', {
         stage,
@@ -566,7 +569,7 @@ async function runOne(idea, client, { cancellationToken, tuiModule, tuiOpts } = 
         reason,
         error_message: sanitiseMessage(error),
         error_stack: error?.stack || '',
-        actionable_message: actionableMessage({ id: idea.id, ...inv.last_failure }),
+        actionable_message: actionable,
       });
     }
     return { ok: false, error };
@@ -574,6 +577,14 @@ async function runOne(idea, client, { cancellationToken, tuiModule, tuiOpts } = 
     if (tuiCleanup) await tuiCleanup();
     if (recordCleanup) await recordCleanup();
     setBus(null);
+    // Print AFTER tuiCleanup so the message survives Ink unmounting and isn't
+    // interleaved with the dashboard's rendering. Always print, regardless of
+    // TUI mode — the dashboard's status line shows a sanitised version but the
+    // terminal record needs the actionable message even after the screen tears
+    // down.
+    if (failureReport) {
+      process.stderr.write(failureReport);
+    }
   }
 }
 

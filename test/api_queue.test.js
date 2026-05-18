@@ -76,6 +76,39 @@ test('handoff to a queued waiter keeps inflight bounded by CONCURRENCY', async (
   assert.equal(stats.queued, 0);
 });
 
+test('per-attempt timeout aborts the AbortSignal passed to fn', async () => {
+  // Regression test for orphaned streams: prior to abort plumbing, a timed-out
+  // call kept running in the background — its event listeners still fired and
+  // its socket stayed open until the server tore it down. The queue MUST now
+  // pass an AbortSignal to fn, and a per-attempt timeout MUST signal abort on
+  // it before rejecting the wrapper.
+  const queue = loadFreshQueue();
+  let receivedSignal = null;
+  let abortFired = false;
+  await assert.rejects(
+    queue.enqueue(
+      (signal) => {
+        receivedSignal = signal;
+        return new Promise((_, reject) => {
+          signal.addEventListener('abort', () => {
+            abortFired = true;
+            reject(new Error('aborted'));
+          });
+        });
+      },
+      // perAttemptTimeoutMs === wallClockMaxMs prevents retry: once the first
+      // attempt times out, elapsed already equals the cap so the catch throws
+      // the wall-clock stall error rather than waiting + retrying.
+      { perAttemptTimeoutMs: 50, wallClockMaxMs: 50 }
+    ),
+    /exceeded (wall-clock cap|per-attempt timeout)/
+  );
+  assert.ok(receivedSignal, 'fn must receive an AbortSignal');
+  assert.equal(typeof receivedSignal.aborted, 'boolean');
+  assert.ok(abortFired, 'abort must fire on the signal when per-attempt timeout elapses');
+  assert.equal(receivedSignal.aborted, true);
+});
+
 test('per-attempt timeout fires when fn never settles, then exhausts retries', async () => {
   const queue = loadFreshQueue();
   // Monkey-patch the timeout window down via internal symbols would be ideal,

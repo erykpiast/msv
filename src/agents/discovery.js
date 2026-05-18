@@ -11,6 +11,15 @@ const { appendLog } = require('../storage');
 
 const DISCOVERY_SEARCH_BUDGET = 3;
 const DISCOVERY_MAX_TOKENS = 8000;
+// Discovery is a streaming call with 3 server web_searches plus a 12-persona
+// structured tool_use emit. The default 75s per-attempt budget routinely cut
+// off attempts mid-emit. 120s comfortably covers observed end-to-end timing
+// (~85-100s) while still bounding hangs.
+const DISCOVERY_PER_ATTEMPT_TIMEOUT_MS = 120_000;
+// Allow exactly one retry within the wall-clock window. EATTEMPTTIMEOUT is
+// still classified as retryable upstream; if both attempts blow the budget,
+// fail-fast rather than running a third.
+const DISCOVERY_WALL_CLOCK_MAX_MS = 240_000;
 
 const EMIT_PERSONAS_TOOL = {
   name: 'emit_personas',
@@ -47,12 +56,32 @@ const EMIT_PERSONAS_TOOL = {
   },
 };
 
-async function streamWithProgress(client, params, onContentBlock) {
-  const stream = client.messages.stream(params);
-  if (onContentBlock) {
-    stream.on('contentBlock', onContentBlock);
+// Pass the queue's AbortSignal to the SDK so a per-attempt timeout actually
+// closes the stream. The `aborted` flag is belt-and-suspenders: even if the
+// SDK emits one more contentBlock between abort() and socket teardown, we
+// don't want it firing into bus listeners that belong to a now-stale attempt
+// (which would land events under the wrong logical owner and confuse replay).
+async function streamWithProgress(client, params, onContentBlock, signal) {
+  const requestOptions = signal ? { signal } : undefined;
+  const stream = client.messages.stream(params, requestOptions);
+  let aborted = !!signal?.aborted;
+  const onAbort = () => {
+    aborted = true;
+  };
+  if (signal && !aborted) {
+    signal.addEventListener('abort', onAbort, { once: true });
   }
-  return await stream.finalMessage();
+  if (onContentBlock) {
+    stream.on('contentBlock', (block) => {
+      if (aborted) return;
+      onContentBlock(block);
+    });
+  }
+  try {
+    return await stream.finalMessage();
+  } finally {
+    if (signal) signal.removeEventListener('abort', onAbort);
+  }
 }
 
 // Two-call flow: first call lets the model use web_search (a server tool that
@@ -106,18 +135,24 @@ async function runPerspectiveDiscovery({ client, idea, model, budget, bus }) {
     residual_errors: firstResidual,
   } = await runWithWebSearchRetry({
     doCall: () =>
-      apiQueue.enqueue(() =>
-        streamWithProgress(
-          client,
-          {
-            model,
-            system: PERSPECTIVE_DISCOVERY,
-            max_tokens: DISCOVERY_MAX_TOKENS,
-            messages,
-            tools,
-          },
-          turn1OnBlock
-        )
+      apiQueue.enqueue(
+        (signal) =>
+          streamWithProgress(
+            client,
+            {
+              model,
+              system: PERSPECTIVE_DISCOVERY,
+              max_tokens: DISCOVERY_MAX_TOKENS,
+              messages,
+              tools,
+            },
+            turn1OnBlock,
+            signal
+          ),
+        {
+          perAttemptTimeoutMs: DISCOVERY_PER_ATTEMPT_TIMEOUT_MS,
+          wallClockMaxMs: DISCOVERY_WALL_CLOCK_MAX_MS,
+        }
       ),
     onAttempt: async ({ attempt, response, summary }) => {
       const u = tokenUsage(response);
@@ -190,25 +225,31 @@ async function runPerspectiveDiscovery({ client, idea, model, budget, bus }) {
     }
     messages.push({ role: 'user', content: turn2Content });
 
-    const secondResponse = await apiQueue.enqueue(() =>
-      streamWithProgress(
-        client,
-        {
-          model,
-          system: PERSPECTIVE_DISCOVERY,
-          max_tokens: DISCOVERY_MAX_TOKENS,
-          messages,
-          tools: [EMIT_PERSONAS_TOOL],
-          tool_choice: { type: 'tool', name: 'emit_personas' },
-        },
-        (block) => {
-          if (!bus) return;
-          if (block.type === 'tool_use' && block.name === 'emit_personas') {
-            const n = (block.input?.candidate_personas || []).length;
-            bus.emit('discovery.emit_personas', { count: n, retry: true });
-          }
-        }
-      )
+    const secondResponse = await apiQueue.enqueue(
+      (signal) =>
+        streamWithProgress(
+          client,
+          {
+            model,
+            system: PERSPECTIVE_DISCOVERY,
+            max_tokens: DISCOVERY_MAX_TOKENS,
+            messages,
+            tools: [EMIT_PERSONAS_TOOL],
+            tool_choice: { type: 'tool', name: 'emit_personas' },
+          },
+          (block) => {
+            if (!bus) return;
+            if (block.type === 'tool_use' && block.name === 'emit_personas') {
+              const n = (block.input?.candidate_personas || []).length;
+              bus.emit('discovery.emit_personas', { count: n, retry: true });
+            }
+          },
+          signal
+        ),
+      {
+        perAttemptTimeoutMs: DISCOVERY_PER_ATTEMPT_TIMEOUT_MS,
+        wallClockMaxMs: DISCOVERY_WALL_CLOCK_MAX_MS,
+      }
     );
     const secondUsage = tokenUsage(secondResponse);
     if (budget) {

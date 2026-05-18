@@ -244,7 +244,7 @@ async function runStructuredCall({
   const perAttemptTimeoutMs = timeoutMs + ATTEMPT_BACKSTOP_BUFFER_MS;
   const wallClockMaxMs = timeoutMs + 30_000;
   const response = await apiQueue.enqueue(
-    () => client.messages.create(params, { timeout: timeoutMs }),
+    (signal) => client.messages.create(params, { timeout: timeoutMs, signal }),
     { perAttemptTimeoutMs, wallClockMaxMs }
   );
   const usage = tokenUsage(response);
