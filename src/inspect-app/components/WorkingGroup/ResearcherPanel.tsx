@@ -63,6 +63,9 @@ export function ResearcherPanel({ wg }: { wg: WorkingGroupView }) {
                           <Card key={f.finding_id}>
                             <Stack gap="xs">
                               <Group gap="xs">
+                                {f.nickname ? (
+                                  <Text size="xs" fw={700}>{f.nickname}</Text>
+                                ) : null}
                                 <Text size="xs" c="dimmed">{f.finding_id}</Text>
                                 {f.quality ? (
                                   <Badge size="xs" variant="light" color="gray">{f.quality}</Badge>

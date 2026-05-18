@@ -397,6 +397,16 @@ async function runWorkingGroup({
     if (cancellationToken?.requested) {
       throw new CancellationError(`cancelled at ${territoryId} alignment`);
     }
+    await attachWorkingGroupNicknames({
+      client,
+      idea,
+      result,
+      territory,
+      personas: pairPersonas,
+      bus,
+      territoryId: safeTerritoryId,
+      subStage: 'alignment',
+    });
     await onCheckpoint?.({ partialResult: result, completedSubStage: 'alignment' });
   }
 
@@ -479,6 +489,16 @@ async function runWorkingGroup({
     if (cancellationToken?.requested) {
       throw new CancellationError(`cancelled at ${territoryId} researcher`);
     }
+    await attachWorkingGroupNicknames({
+      client,
+      idea,
+      result,
+      territory,
+      personas: pairPersonas,
+      bus,
+      territoryId: safeTerritoryId,
+      subStage: 'researcher',
+    });
     await onCheckpoint?.({ partialResult: result, completedSubStage: 'researcher' });
   }
 
@@ -564,6 +584,16 @@ async function runWorkingGroup({
     if (cancellationToken?.requested) {
       throw new CancellationError(`cancelled at ${territoryId} observation`);
     }
+    await attachWorkingGroupNicknames({
+      client,
+      idea,
+      result,
+      territory,
+      personas: pairPersonas,
+      bus,
+      territoryId: safeTerritoryId,
+      subStage: 'observation',
+    });
     await onCheckpoint?.({ partialResult: result, completedSubStage: 'observation' });
   }
   if (bus) bus.emit('wg.observation.done', {
@@ -735,6 +765,16 @@ async function runWorkingGroup({
       ? 'mutual_concession'
       : 'budget_exhausted';
 
+    await attachWorkingGroupNicknames({
+      client,
+      idea,
+      result,
+      territory,
+      personas: pairPersonas,
+      bus,
+      territoryId: safeTerritoryId,
+      subStage: 'debate',
+    });
     await onCheckpoint?.({ partialResult: result, completedSubStage: 'debate' });
     if (cancellationToken?.requested) {
       throw new CancellationError(`cancelled at ${territoryId} debate`);
@@ -749,20 +789,10 @@ async function runWorkingGroup({
     terminated_by: result.terminated_by,
   });
 
-  // Cosmetic nicknamer: batch-name every move + observation in this WG so the
-  // UI/replay tool can show "friction-cliff" rather than "m_t_002_debate_0007".
-  // Kick off before emitting `wg.end` so the TUI advances the WG card off the
-  // critical path, but await before returning so the caller's checkpoint
-  // persists nickname-decorated entities.
-  const nicknamePromise = attachWorkingGroupNicknames({
-    client,
-    idea,
-    result,
-    territory,
-    personas: pairPersonas,
-    bus,
-    territoryId: safeTerritoryId,
-  });
+  // Nicknames are now attached incrementally inside each sub-stage block
+  // above (alignment / researcher / observation / debate) so the dashboard
+  // and inspect view see readable handles as soon as entities exist, and so
+  // resumed WGs don't re-name already-named entities. No end-of-WG batch.
 
   if (bus) bus.emit('wg.end', {
     territory_id: safeTerritoryId,
@@ -774,7 +804,6 @@ async function runWorkingGroup({
     terminated_by: result.terminated_by,
   });
 
-  await nicknamePromise;
   return result;
 }
 

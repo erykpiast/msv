@@ -356,21 +356,27 @@ test('generateNicknames forwards a custom maxTokens to the API call', async () =
 // attachWorkingGroupNicknames
 // ---------------------------------------------------------------------------
 
-test('attachWorkingGroupNicknames mutates moves and observations in place', async () => {
-  const move = {
-    move_id: 'm_t_001_debate_0001',
-    type: 'Claim',
-    content: 'some debate content',
-    stage: 'debate',
+test('attachWorkingGroupNicknames (alignment) names only alignment-stage moves and emits sub_stage tag', async () => {
+  const align1 = { move_id: 'm_t_001_alignment_0001', type: 'Drop', content: 'align 1', stage: 'alignment' };
+  const align2 = { move_id: 'm_t_001_alignment_0002', type: 'Keep', content: 'align 2', stage: 'alignment' };
+  // A debate move on the same result must NOT be sent to the alignment batch
+  // — debate hasn't happened yet when the alignment nicknamer fires, but the
+  // filter has to work even if the array is dirty.
+  const debate = { move_id: 'm_t_001_debate_0001', type: 'Claim', content: 'debate', stage: 'debate' };
+  const result = {
+    moves: [align1, align2, debate],
+    observations: [],
+    researcher_reports: [],
+    surviving_claims: [],
   };
-  const obs = { observation_id: 'o_t_001_001', content: 'an observation' };
-  const result = { moves: [move], observations: [obs], surviving_claims: [] };
-  const client = makeClient(async () =>
-    buildToolUseResponse([
-      { id: 'm_t_001_debate_0001', nickname: 'friction-cliff' },
-      { id: 'o_t_001_001', nickname: 'cold-start-tax' },
-    ])
-  );
+  const sentItems = [];
+  const client = makeClient(async (params) => {
+    sentItems.push(...params.messages[0].content.split('\n').filter((l) => l.startsWith('- ')));
+    return buildToolUseResponse([
+      { id: 'm_t_001_alignment_0001', nickname: 'cull-stragglers' },
+      { id: 'm_t_001_alignment_0002', nickname: 'preserve-anchors' },
+    ]);
+  });
   const events = [];
   const bus = { emit: (name, payload) => events.push({ name, payload }) };
   await attachWorkingGroupNicknames({
@@ -381,56 +387,131 @@ test('attachWorkingGroupNicknames mutates moves and observations in place', asyn
     personas: [{ name: 'persona-a' }],
     bus,
     territoryId: 't_001',
+    subStage: 'alignment',
   });
-  assert.equal(move.nickname, 'friction-cliff');
-  assert.equal(obs.nickname, 'cold-start-tax');
+  assert.equal(align1.nickname, 'cull-stragglers');
+  assert.equal(align2.nickname, 'preserve-anchors');
+  assert.equal(debate.nickname, undefined, 'debate move must not be named by the alignment batch');
+  // Sanity: the user message only mentioned the two alignment moves.
+  assert.equal(sentItems.filter((l) => l.includes('m_t_001_alignment_')).length, 2);
+  assert.equal(sentItems.filter((l) => l.includes('m_t_001_debate_')).length, 0);
   const evt = events.find((e) => e.name === 'wg.nicknames.done');
-  assert.ok(evt, 'wg.nicknames.done should be emitted');
-  assert.equal(evt.payload.territory_id, 't_001');
+  assert.ok(evt);
+  assert.equal(evt.payload.sub_stage, 'alignment');
   assert.equal(evt.payload.count, 2);
 });
 
-test('attachWorkingGroupNicknames propagates move nickname to surviving claims with -cN suffix', async () => {
-  const move = {
-    move_id: 'm_t_001_debate_0001',
-    type: 'Claim',
-    content: 'a claim',
-    stage: 'debate',
-  };
-  const claim1 = {
-    claim_id: 'c_m_t_001_debate_0001_001',
-    originating_move_id: 'm_t_001_debate_0001',
-    content: 'c1',
-  };
-  const claim2 = {
-    claim_id: 'c_m_t_001_debate_0001_002',
-    originating_move_id: 'm_t_001_debate_0001',
-    content: 'c2',
-  };
+test('attachWorkingGroupNicknames (researcher) names findings nested in researcher_reports', async () => {
+  const f1 = { finding_id: 'f_aq_001_01', summary: 'first finding', source_url: 'u1', source_quote: 'q1', confidence_in_source: 7 };
+  const f2 = { finding_id: 'f_aq_001_02', summary: 'second finding', source_url: 'u2', source_quote: 'q2', confidence_in_source: 6 };
+  const f3 = { finding_id: 'f_aq_002_01', summary: 'third finding', source_url: 'u3', source_quote: 'q3', confidence_in_source: 8 };
   const result = {
-    moves: [move],
+    moves: [],
     observations: [],
-    surviving_claims: [claim1, claim2],
+    researcher_reports: [
+      { report_id: 'rr_001', aligned_id: 'aq_001', outcome: 'useful', findings: [f1, f2], search_trace: [] },
+      { report_id: 'rr_002', aligned_id: 'aq_002', outcome: 'useful', findings: [f3], search_trace: [] },
+    ],
+    surviving_claims: [],
   };
   const client = makeClient(async () =>
-    buildToolUseResponse([{ id: 'm_t_001_debate_0001', nickname: 'base-name' }])
+    buildToolUseResponse([
+      { id: 'f_aq_001_01', nickname: 'cold-start' },
+      { id: 'f_aq_001_02', nickname: 'token-cliff' },
+      { id: 'f_aq_002_01', nickname: 'survival-bias' },
+    ])
   );
+  const events = [];
+  const bus = { emit: (name, payload) => events.push({ name, payload }) };
   await attachWorkingGroupNicknames({
     client,
     idea: { id: 'i_test', raw_capture: 'topic' },
     result,
     territory: { name: 'territory-one' },
     personas: [],
-    bus: null,
+    bus,
     territoryId: 't_001',
+    subStage: 'researcher',
   });
-  assert.equal(claim1.nickname, 'base-name');
-  assert.equal(claim2.nickname, 'base-name-c2');
+  assert.equal(f1.nickname, 'cold-start');
+  assert.equal(f2.nickname, 'token-cliff');
+  assert.equal(f3.nickname, 'survival-bias');
+  const evt = events.find((e) => e.name === 'wg.nicknames.done');
+  assert.ok(evt);
+  assert.equal(evt.payload.sub_stage, 'researcher');
 });
 
-test('attachWorkingGroupNicknames is a no-op (but observable) when nicknames map is empty', async () => {
-  const move = { move_id: 'm_001', type: 'Claim', content: 'x' };
-  const result = { moves: [move], observations: [], surviving_claims: [] };
+test('attachWorkingGroupNicknames (observation) names only observations', async () => {
+  const obs1 = { observation_id: 'o_t_001_001', content: 'obs one' };
+  const obs2 = { observation_id: 'o_t_001_002', content: 'obs two' };
+  const result = {
+    moves: [],
+    observations: [obs1, obs2],
+    researcher_reports: [],
+    surviving_claims: [],
+  };
+  const client = makeClient(async () =>
+    buildToolUseResponse([
+      { id: 'o_t_001_001', nickname: 'frame-shift' },
+      { id: 'o_t_001_002', nickname: 'evidence-gap' },
+    ])
+  );
+  await attachWorkingGroupNicknames({
+    client,
+    idea: { id: 'i_test', raw_capture: 'topic' },
+    result,
+    territory: {},
+    personas: [],
+    bus: null,
+    territoryId: 't_001',
+    subStage: 'observation',
+  });
+  assert.equal(obs1.nickname, 'frame-shift');
+  assert.equal(obs2.nickname, 'evidence-gap');
+});
+
+test('attachWorkingGroupNicknames (debate) names debate moves and propagates to surviving claims with -cN', async () => {
+  const align = { move_id: 'm_t_001_alignment_0001', type: 'Drop', content: 'align', stage: 'alignment', nickname: 'already-named' };
+  const debate1 = { move_id: 'm_t_001_debate_0001', type: 'Claim', content: 'debate 1', stage: 'debate' };
+  const debate2 = { move_id: 'm_t_001_debate_0002', type: 'Rebut', content: 'debate 2', stage: 'debate' };
+  const claim1 = { claim_id: 'c_m_t_001_debate_0001_001', originating_move_id: 'm_t_001_debate_0001', content: 'c1' };
+  const claim2 = { claim_id: 'c_m_t_001_debate_0001_002', originating_move_id: 'm_t_001_debate_0001', content: 'c2' };
+  const claim3 = { claim_id: 'c_m_t_001_debate_0002_001', originating_move_id: 'm_t_001_debate_0002', content: 'c3' };
+  const result = {
+    moves: [align, debate1, debate2],
+    observations: [],
+    researcher_reports: [],
+    surviving_claims: [claim1, claim2, claim3],
+  };
+  const client = makeClient(async () =>
+    buildToolUseResponse([
+      { id: 'm_t_001_debate_0001', nickname: 'opening-thesis' },
+      { id: 'm_t_001_debate_0002', nickname: 'sharp-rebuttal' },
+    ])
+  );
+  await attachWorkingGroupNicknames({
+    client,
+    idea: { id: 'i_test', raw_capture: 'topic' },
+    result,
+    territory: {},
+    personas: [],
+    bus: null,
+    territoryId: 't_001',
+    subStage: 'debate',
+  });
+  assert.equal(debate1.nickname, 'opening-thesis');
+  assert.equal(debate2.nickname, 'sharp-rebuttal');
+  // Alignment move's existing nickname must not be overwritten.
+  assert.equal(align.nickname, 'already-named');
+  // Claim propagation: first claim inherits, second gets -c2 suffix.
+  assert.equal(claim1.nickname, 'opening-thesis');
+  assert.equal(claim2.nickname, 'opening-thesis-c2');
+  assert.equal(claim3.nickname, 'sharp-rebuttal');
+});
+
+test('attachWorkingGroupNicknames is observable on silent failure and tags sub_stage', async () => {
+  const move = { move_id: 'm_t_001_alignment_0001', type: 'Claim', content: 'x', stage: 'alignment' };
+  const result = { moves: [move], observations: [], researcher_reports: [], surviving_claims: [] };
   const client = makeClient(async () => buildToolUseResponse([])); // empty
   const events = [];
   const bus = { emit: (name, payload) => events.push({ name, payload }) };
@@ -442,18 +523,20 @@ test('attachWorkingGroupNicknames is a no-op (but observable) when nicknames map
     personas: [],
     bus,
     territoryId: 't_001',
+    subStage: 'alignment',
   });
   assert.equal(move.nickname, undefined);
   const failed = events.find((e) => e.name === 'wg.nicknames.failed');
   assert.ok(failed, 'wg.nicknames.failed must be emitted on silent failure');
   assert.equal(failed.payload.territory_id, 't_001');
+  assert.equal(failed.payload.sub_stage, 'alignment');
   assert.equal(failed.payload.attempted, 1);
   assert.equal(failed.payload.reason, 'empty_tool_input');
 });
 
 test('attachWorkingGroupNicknames emits failed event with api_error reason when the API throws', async () => {
-  const move = { move_id: 'm_001', type: 'Claim', content: 'x' };
-  const result = { moves: [move], observations: [], surviving_claims: [] };
+  const move = { move_id: 'm_t_001_debate_0001', type: 'Claim', content: 'x', stage: 'debate' };
+  const result = { moves: [move], observations: [], researcher_reports: [], surviving_claims: [] };
   const client = makeClient(async () => {
     throw new Error('rate limited');
   });
@@ -467,21 +550,29 @@ test('attachWorkingGroupNicknames emits failed event with api_error reason when 
     personas: [],
     bus,
     territoryId: 't_001',
+    subStage: 'debate',
   });
   const failed = events.find((e) => e.name === 'wg.nicknames.failed');
   assert.ok(failed);
+  assert.equal(failed.payload.sub_stage, 'debate');
   assert.equal(failed.payload.reason, 'api_error');
   assert.equal(failed.payload.detail, 'rate limited');
 });
 
-test('attachWorkingGroupNicknames passes maxTokens=4000 to the API call (50-item batch headroom)', async () => {
+test('attachWorkingGroupNicknames passes maxTokens=4000 to the API call (researcher batch headroom)', async () => {
   let capturedMaxTokens;
   const client = makeClient(async (params) => {
     capturedMaxTokens = params.max_tokens;
-    return buildToolUseResponse([{ id: 'm_001', nickname: 'test-name' }]);
+    return buildToolUseResponse([{ id: 'f_aq_001_01', nickname: 'test-name' }]);
   });
-  const move = { move_id: 'm_001', type: 'Claim', content: 'x' };
-  const result = { moves: [move], observations: [], surviving_claims: [] };
+  const result = {
+    moves: [],
+    observations: [],
+    researcher_reports: [
+      { report_id: 'rr_001', aligned_id: 'aq_001', outcome: 'useful', findings: [{ finding_id: 'f_aq_001_01', summary: 'x' }], search_trace: [] },
+    ],
+    surviving_claims: [],
+  };
   await attachWorkingGroupNicknames({
     client,
     idea: { id: 'i_test' },
@@ -490,8 +581,49 @@ test('attachWorkingGroupNicknames passes maxTokens=4000 to the API call (50-item
     personas: [],
     bus: null,
     territoryId: 't_001',
+    subStage: 'researcher',
   });
   assert.equal(capturedMaxTokens, 4000);
+});
+
+test('attachWorkingGroupNicknames is a no-op when the sub-stage has no items to name', async () => {
+  // Researcher with no findings — must not call the API, must not emit events.
+  let apiCalled = false;
+  const client = makeClient(async () => {
+    apiCalled = true;
+    return buildToolUseResponse([]);
+  });
+  const events = [];
+  const bus = { emit: (name, payload) => events.push({ name, payload }) };
+  await attachWorkingGroupNicknames({
+    client,
+    idea: { id: 'i_test' },
+    result: { moves: [], observations: [], researcher_reports: [], surviving_claims: [] },
+    territory: {},
+    personas: [],
+    bus,
+    territoryId: 't_001',
+    subStage: 'researcher',
+  });
+  assert.equal(apiCalled, false);
+  assert.equal(events.length, 0);
+});
+
+test('attachWorkingGroupNicknames throws on unknown subStage', async () => {
+  await assert.rejects(
+    () =>
+      attachWorkingGroupNicknames({
+        client: makeClient(async () => buildToolUseResponse([])),
+        idea: { id: 'i_test' },
+        result: { moves: [], observations: [], researcher_reports: [], surviving_claims: [] },
+        territory: {},
+        personas: [],
+        bus: null,
+        territoryId: 't_001',
+        subStage: 'made_up_stage',
+      }),
+    /unknown subStage 'made_up_stage'/
+  );
 });
 
 // ---------------------------------------------------------------------------

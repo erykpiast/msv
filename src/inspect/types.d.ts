@@ -61,6 +61,10 @@ export type Finding = {
   source_url?: string;
   source_title?: string;
   quality?: 'primary' | 'secondary' | 'indirect';
+  /** Cosmetic display label set by the per-sub-stage WG nicknamer at the end
+   * of the researcher sub-stage. Absent on older logs predating the
+   * researcher-stage nicknamer or when the nicknamer's LLM call failed. */
+  nickname?: string;
 };
 
 export type ResearcherReport = {
@@ -78,7 +82,7 @@ export type Observation = {
   report_id: string;
   content: string;
   cited_finding_ids: string[];
-  /** Cosmetic display label set by the end-of-WG nicknamer. Absent on older
+  /** Cosmetic display label set by the per-sub-stage WG nicknamer. Absent on older
    * logs predating the nicknamer or when the nicknamer's LLM call failed. */
   nickname?: string;
 };
@@ -126,7 +130,7 @@ export type Move = {
   usage?: TokenUsage | null;
   // v5 only — observation and finding citations for Claims
   evidence_refs?: EvidenceRef[];
-  /** Cosmetic display label set by the end-of-WG nicknamer. Absent on older
+  /** Cosmetic display label set by the per-sub-stage WG nicknamer. Absent on older
    * logs predating the nicknamer or when the nicknamer's LLM call failed. */
   nickname?: string;
 };

@@ -123,14 +123,27 @@ export function renderLeaf(
       const obs = wg?.observations?.find((o) => o.observation_id === leaf.id);
       if (!obs) return null;
       const cited = obs.cited_finding_ids ?? [];
+      // Resolve finding nicknames so the citation list reads as
+      // "cites: friction-cliff (f_xxx), cold-start-tax (f_yyy)" instead of
+      // raw IDs.
+      const findingNickById = new Map<string, string>();
+      for (const rr of wg?.researcher_reports ?? []) {
+        for (const f of rr.findings ?? []) {
+          if (f.nickname) findingNickById.set(f.finding_id, f.nickname);
+        }
+      }
+      const citedLabels = cited.map((id) => {
+        const nick = findingNickById.get(id);
+        return nick ? `${nick} (${id})` : id;
+      });
       return {
         title: `Observation: ${obs.nickname ? `${obs.nickname} · ${obs.observation_id}` : obs.observation_id}`,
         body: (
           <Stack gap="xs">
             <Text>{String(obs.content ?? '')}</Text>
-            {cited.length > 0 && (
+            {citedLabels.length > 0 && (
               <Text size="sm" c="dimmed">
-                cites: {cited.join(', ')}
+                cites: {citedLabels.join(', ')}
               </Text>
             )}
           </Stack>

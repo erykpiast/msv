@@ -185,10 +185,89 @@ async function generateNicknames(
 // their own.
 // ---------------------------------------------------------------------------
 
+// Collect the entities a given sub-stage just produced. Each sub-stage has a
+// distinct shape: alignment/debate add moves filtered by `stage`, researcher
+// adds findings nested under researcher_reports, observation adds observations.
+function collectSubStageItems(subStage, result) {
+  switch (subStage) {
+    case 'alignment':
+      return (result.moves || [])
+        .filter((m) => m && m.stage === 'alignment' && typeof m.content === 'string' && m.content.trim())
+        .map((m) => ({ id: m.move_id, content: `${m.type}: ${m.content}` }));
+    case 'researcher':
+      return (result.researcher_reports || []).flatMap((r) =>
+        (r?.findings || [])
+          .filter((f) => f && typeof f.summary === 'string' && f.summary.trim())
+          .map((f) => ({ id: f.finding_id, content: f.summary }))
+      );
+    case 'observation':
+      return (result.observations || [])
+        .filter((o) => o && typeof o.content === 'string' && o.content.trim())
+        .map((o) => ({ id: o.observation_id, content: o.content }));
+    case 'debate':
+      return (result.moves || [])
+        .filter((m) => m && m.stage === 'debate' && typeof m.content === 'string' && m.content.trim())
+        .map((m) => ({ id: m.move_id, content: `${m.type}: ${m.content}` }));
+    default:
+      throw new Error(`attachWorkingGroupNicknames: unknown subStage '${subStage}'`);
+  }
+}
+
+// Apply the nickname Map to the right entity collection. Debate also
+// propagates each move's nickname onto its surviving claims (each claim_id is
+// `c_${move_id}_${NNN}`; first claim inherits, additional claims get -c2/-c3
+// suffixes). This is the only sub-stage where a single Haiku batch hydrates
+// two entity types.
+function applyNicknames(subStage, result, nicknames) {
+  if (subStage === 'alignment' || subStage === 'debate') {
+    for (const m of result.moves || []) {
+      const nick = nicknames.get(m.move_id);
+      if (nick) m.nickname = nick;
+    }
+    if (subStage === 'debate') {
+      const moveNickById = new Map();
+      for (const m of result.moves || []) {
+        if (m.nickname && m.stage === 'debate') moveNickById.set(m.move_id, m.nickname);
+      }
+      const perMoveCounter = new Map();
+      for (const sc of result.surviving_claims || []) {
+        const baseNick = moveNickById.get(sc.originating_move_id);
+        if (!baseNick) continue;
+        const count = (perMoveCounter.get(sc.originating_move_id) || 0) + 1;
+        perMoveCounter.set(sc.originating_move_id, count);
+        sc.nickname = count === 1 ? baseNick : `${baseNick}-c${count}`;
+      }
+    }
+    return;
+  }
+  if (subStage === 'researcher') {
+    for (const r of result.researcher_reports || []) {
+      for (const f of r?.findings || []) {
+        const nick = nicknames.get(f.finding_id);
+        if (nick) f.nickname = nick;
+      }
+    }
+    return;
+  }
+  if (subStage === 'observation') {
+    for (const o of result.observations || []) {
+      const nick = nicknames.get(o.observation_id);
+      if (nick) o.nickname = nick;
+    }
+  }
+}
+
 /**
- * Name every move + observation in a finished working group, then propagate
- * move nicknames onto the surviving claims they originated. Mutates entities
- * inside `result` in place. Never throws.
+ * Name every entity produced by a single working-group sub-stage. Called
+ * incrementally as each sub-stage completes so the dashboard, TUI log, and
+ * inspect view see readable handles as soon as entities exist — rather than
+ * waiting for the end of the working group.
+ *
+ * Mutates entities inside `result` in place. Never throws. On empty result,
+ * emits `wg.nicknames.failed` with the failure reason.
+ *
+ * @param {object} args
+ * @param {'alignment'|'researcher'|'observation'|'debate'} args.subStage
  */
 async function attachWorkingGroupNicknames({
   client,
@@ -198,25 +277,17 @@ async function attachWorkingGroupNicknames({
   personas,
   bus,
   territoryId,
+  subStage,
 }) {
-  const items = [];
-  for (const m of result.moves || []) {
-    if (typeof m?.content === 'string' && m.content.trim()) {
-      items.push({ id: m.move_id, content: `${m.type}: ${m.content}` });
-    }
-  }
-  for (const o of result.observations || []) {
-    if (typeof o?.content === 'string' && o.content.trim()) {
-      items.push({ id: o.observation_id, content: o.content });
-    }
-  }
+  const items = collectSubStageItems(subStage, result);
   if (items.length === 0) return;
 
-  // 50 items (20 moves + 30 observations) is the typical WG batch and Haiku
-  // needs ~2000 output tokens to encode all the {id, nickname} entries. The
-  // earlier 1200 cap caused silent truncation: the tool call was cut off,
-  // runStructuredCall threw, and the swallow path returned an empty Map with
-  // no observable evidence. 4000 fits comfortably with headroom.
+  // Larger WG sub-stages (observation: ~30; researcher findings: ~50–65) need
+  // significantly more output tokens than the original 1200 default to encode
+  // every {id, nickname} entry. The earlier cap caused silent truncation:
+  // runStructuredCall threw, the swallow path returned an empty Map, and the
+  // failure was invisible. 4000 fits even the researcher-findings batch with
+  // headroom while still bounding cost.
   let failure = null;
   const nicknames = await generateNicknames(client, {
     kind: 'wg',
@@ -235,12 +306,13 @@ async function attachWorkingGroupNicknames({
   if (nicknames.size === 0) {
     if (bus) bus.emit('wg.nicknames.failed', {
       territory_id: territoryId,
+      sub_stage: subStage,
       attempted: items.length,
       reason: failure?.reason || 'unknown',
       detail: failure?.message || null,
     });
     if (idea?.id) {
-      await appendLog(idea.id, `pair-${territoryId}-nicknames`, {
+      await appendLog(idea.id, `pair-${territoryId}-nicknames-${subStage}`, {
         kind: 'failed',
         payload: { attempted: items.length, failure },
       });
@@ -248,33 +320,15 @@ async function attachWorkingGroupNicknames({
     return;
   }
 
-  for (const m of result.moves || []) {
-    const nick = nicknames.get(m.move_id);
-    if (nick) m.nickname = nick;
-  }
-  for (const o of result.observations || []) {
-    const nick = nicknames.get(o.observation_id);
-    if (nick) o.nickname = nick;
-  }
-  // Propagate move nicknames onto surviving claims they originated. Each
-  // claim_id is `c_${move_id}_${NNN}`; the first claim inherits, additional
-  // claims off the same move get -c2, -c3 suffixes.
-  const moveNickById = new Map();
-  for (const m of result.moves || []) {
-    if (m.nickname) moveNickById.set(m.move_id, m.nickname);
-  }
-  const perMoveCounter = new Map();
-  for (const sc of result.surviving_claims || []) {
-    const baseNick = moveNickById.get(sc.originating_move_id);
-    if (!baseNick) continue;
-    const count = (perMoveCounter.get(sc.originating_move_id) || 0) + 1;
-    perMoveCounter.set(sc.originating_move_id, count);
-    sc.nickname = count === 1 ? baseNick : `${baseNick}-c${count}`;
-  }
+  applyNicknames(subStage, result, nicknames);
 
-  if (bus) bus.emit('wg.nicknames.done', { territory_id: territoryId, count: nicknames.size });
+  if (bus) bus.emit('wg.nicknames.done', {
+    territory_id: territoryId,
+    sub_stage: subStage,
+    count: nicknames.size,
+  });
   if (idea?.id) {
-    await appendLog(idea.id, `pair-${territoryId}-nicknames`, {
+    await appendLog(idea.id, `pair-${territoryId}-nicknames-${subStage}`, {
       kind: 'response',
       payload: { nicknames: Object.fromEntries(nicknames) },
     });
