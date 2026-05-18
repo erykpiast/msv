@@ -3,6 +3,7 @@ import { Group, Paper, Stack, Text } from '@mantine/core';
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react';
 import { StageStatusPip } from '../StageStatusPip';
 import { useCanvasRoute, type WorkingGroupSubstage } from '../../hooks/useHashRoute';
+import { useProgressOverlay } from '../../ViewContext';
 import type { WorkingGroupView, StageStatus } from '../../../inspect/types';
 import { tokens } from '../../theme/tokens';
 
@@ -10,6 +11,7 @@ type SubStageNodeData = {
   wg: WorkingGroupView;
   substage: WorkingGroupSubstage;
   status: StageStatus;
+  territoryId: string;
 };
 type SubStageNodeType = Node<SubStageNodeData, 'subStage'>;
 
@@ -32,8 +34,11 @@ const SUMMARY: Record<WorkingGroupSubstage, (wg: WorkingGroupView) => string> = 
 };
 
 export const SubStageNode = memo(function SubStageNode({ data }: NodeProps<SubStageNodeType>) {
-  const { wg, substage, status } = data;
+  const { wg, substage, status, territoryId } = data;
   const { route, setRoute } = useCanvasRoute();
+  const overlay = useProgressOverlay();
+  const isLive = overlay.wgSubstage.get(territoryId) === substage;
+  const effectiveStatus: StageStatus = isLive ? 'in_progress' : status;
   const handleInteract = (e: React.MouseEvent | React.KeyboardEvent) => {
     e.stopPropagation();
     if (route.canvas === 'wg') {
@@ -50,13 +55,14 @@ export const SubStageNode = memo(function SubStageNode({ data }: NodeProps<SubSt
       mih={tokens.subStageBox.height}
       role="button" tabIndex={0}
       onClick={handleInteract} onKeyDown={handleKey}
-      style={{ cursor: 'pointer', opacity: status === 'not_run' ? 0.5 : 1 }}
+      data-status={effectiveStatus}
+      style={{ cursor: 'pointer', opacity: effectiveStatus === 'not_run' ? 0.5 : 1 }}
     >
       <Handle type="target" position={Position.Left} style={{ opacity: 0 }} />
       <Stack gap={2}>
         <Group justify="space-between">
           <Text fw={600}>{LABEL[substage]}</Text>
-          <StageStatusPip status={status} />
+          <StageStatusPip status={effectiveStatus} />
         </Group>
         <Text size="sm" c="dimmed">{SUMMARY[substage](wg)}</Text>
       </Stack>

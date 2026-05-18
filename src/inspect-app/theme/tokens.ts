@@ -48,6 +48,7 @@ export const stageStatusGlyph: Record<StageStatus, string> = {
   failed: '✕',
   skipped: '○',
   not_run: '○',
+  in_progress: '◍',
 };
 
 export const stageStatusColor: Record<StageStatus, string> = {
@@ -56,4 +57,5 @@ export const stageStatusColor: Record<StageStatus, string> = {
   failed: '#dc2626',
   skipped: '#9ca3af',
   not_run: '#9ca3af',
+  in_progress: '#3b82f6',
 };

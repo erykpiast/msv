@@ -1,6 +1,6 @@
 import { Button, Drawer, Group, ScrollArea, Stack } from '@mantine/core';
 import { useEffect, useMemo } from 'react';
-import { useViewContext } from '../ViewContext';
+import { useViewContext, useProgressOverlay } from '../ViewContext';
 import { renderLeaf } from './leafRenderers';
 import { useCanvasRoute, type LeafRef } from '../hooks/useHashRoute';
 import { tokens } from '../theme/tokens';
@@ -13,6 +13,7 @@ export function DetailDrawer({
   onClose: () => void;
 }) {
   const view = useViewContext();
+  const overlay = useProgressOverlay();
   const { route } = useCanvasRoute();
   const territoryId = route.canvas === 'wg' ? route.territoryId : undefined;
 
@@ -24,8 +25,8 @@ export function DetailDrawer({
   }, [leaf, onClose]);
 
   const rendered = useMemo(
-    () => (leaf ? renderLeaf(leaf, view, { territoryId }) : null),
-    [leaf, view, territoryId]
+    () => (leaf ? renderLeaf(leaf, view, { territoryId, overlay }) : null),
+    [leaf, view, territoryId, overlay]
   );
 
   if (!leaf || !rendered) return null;

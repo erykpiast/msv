@@ -32,3 +32,36 @@ if (!(globalThis as any).DOMRect) {
     }
   };
 }
+
+// jsdom 29 does not implement EventSource. Stub it so tests that render
+// components using useEventSource don't throw ReferenceError.
+if (!(globalThis as unknown as Record<string, unknown>)['EventSource']) {
+  class MockEventSource {
+    static CONNECTING = 0;
+    static OPEN = 1;
+    static CLOSED = 2;
+    readyState = MockEventSource.CONNECTING;
+    url: string;
+    onopen: ((e: Event) => void) | null = null;
+    onerror: ((e: Event) => void) | null = null;
+    private listeners: Record<string, ((e: MessageEvent) => void)[]> = {};
+
+    constructor(url: string) { this.url = url; }
+
+    addEventListener(type: string, fn: (e: MessageEvent) => void) {
+      (this.listeners[type] ??= []).push(fn);
+    }
+    removeEventListener(type: string, fn: (e: MessageEvent) => void) {
+      this.listeners[type] = (this.listeners[type] ?? []).filter(f => f !== fn);
+    }
+    dispatchMessage(type: string, data: string) {
+      this.readyState = MockEventSource.OPEN;
+      this.onopen?.({} as Event);
+      for (const fn of this.listeners[type] ?? []) {
+        fn(new MessageEvent(type, { data }));
+      }
+    }
+    close() { this.readyState = MockEventSource.CLOSED; }
+  }
+  (globalThis as unknown as Record<string, unknown>)['EventSource'] = MockEventSource;
+}

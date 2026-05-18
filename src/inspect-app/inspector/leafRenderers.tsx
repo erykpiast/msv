@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
-import { Badge, Stack, Text } from '@mantine/core';
+import { Badge, Skeleton, Stack, Text } from '@mantine/core';
 import type { InvestigationView, WorkingGroupView } from '../../inspect/types';
+import type { ProgressOverlay } from '../hooks/useLiveProgress';
 import type { LeafRef, WorkingGroupSubstage } from '../hooks/useHashRoute';
 import { PersonaCard } from '../components/Discovery/PersonaCard';
 import { SubQuestionCard } from '../components/Coordinator/SubQuestionCard';
@@ -26,11 +27,15 @@ function formatConfidence(n: unknown): string {
   return typeof n === 'number' && Number.isFinite(n) ? n.toFixed(2) : '—';
 }
 
+// overlay is omitted in static (post-mortem) mode. Only the 'move' and
+// 'wgPanel' leaf kinds use it to show skeleton placeholders for in-flight
+// content. All other leaf kinds ignore it.
 export function renderLeaf(
   leaf: LeafRef,
   view: InvestigationView,
-  context?: { territoryId?: string }
+  context?: { territoryId?: string; overlay?: ProgressOverlay }
 ): Rendered | null {
+  const overlay = context?.overlay;
   const personaName = (id: string) =>
     view.discovery.candidate_personas.find((p) => p.id === id)?.name ?? id;
 
@@ -156,7 +161,15 @@ export function renderLeaf(
         (w.moves ?? []).some((m) => m.move_id === leaf.id)
       );
       const move = wg?.moves?.find((m) => m.move_id === leaf.id);
-      if (!move || !wg) return null;
+      if (!move || !wg) {
+        if (overlay && overlay.inProgressWg.size > 0) {
+          return {
+            title: 'Debate move',
+            body: <Skeleton height={120} radius="sm" />,
+          };
+        }
+        return null;
+      }
       const survivingIds = new Set((wg.surviving_claims ?? []).map((c) => c.originating_move_id));
       return {
         title: `${move.type} by ${personaName(move.by_persona_id)}`,
@@ -254,7 +267,15 @@ export function renderLeaf(
     case 'wgPanel': {
       const territoryId = context?.territoryId;
       const wg = territoryId ? view.working_groups?.[territoryId] : undefined;
-      if (!wg) return null;
+      if (!wg) {
+        if (overlay && territoryId && overlay.inProgressWg.has(territoryId)) {
+          return {
+            title: `WG panel · ${leaf.substage}`,
+            body: <Skeleton height={120} radius="sm" />,
+          };
+        }
+        return null;
+      }
       const survivingIds = new Set((wg.surviving_claims ?? []).map((c) => c.originating_move_id));
       let body: ReactNode;
       switch (leaf.substage as WorkingGroupSubstage) {

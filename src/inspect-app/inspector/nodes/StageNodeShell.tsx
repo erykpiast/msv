@@ -13,6 +13,7 @@ export function StageNodeShell({
   onActivate,
   ariaExpanded,
   width,
+  isLive,
 }: {
   title: string;
   status: StageStatus;
@@ -21,7 +22,9 @@ export function StageNodeShell({
   onActivate?: () => void;
   ariaExpanded?: boolean;
   width?: number;
+  isLive?: boolean;
 }) {
+  const effectiveStatus: StageStatus = isLive ? 'in_progress' : status;
   const handleClick = (e: MouseEvent) => {
     e.stopPropagation();
     onActivate?.();
@@ -43,13 +46,14 @@ export function StageNodeShell({
       aria-expanded={ariaExpanded}
       onClick={handleClick}
       onKeyDown={handleKey}
+      data-status={effectiveStatus}
       style={{ cursor: onActivate ? 'pointer' : 'default' }}
     >
       <Handle type="target" position={Position.Left} style={{ opacity: 0 }} />
       <Stack gap={4}>
         <Group justify="space-between" gap="xs">
           <Text fw={600}>{title}</Text>
-          <StageStatusPip status={status} />
+          <StageStatusPip status={effectiveStatus} />
         </Group>
         {summary}
         {footer}

@@ -34,6 +34,7 @@ const { CancellationError, classifyError, sanitiseMessage, actionableMessage } =
 const { createBus } = require('../bus');
 const { selectTui } = require('../tui');
 const { attachRecorder } = require('../event_recorder');
+const { attachRelay } = require('../event_relay');
 const { setBus, resetStats } = require('../api_queue');
 
 const HEARTBEAT_MS = 15_000;
@@ -528,10 +529,12 @@ async function runOne(idea, client, { cancellationToken, tuiModule, tuiOpts } = 
 
   let recordCleanup = async () => {};
   let tuiCleanup = async () => {};
+  let relayCleanup = () => {};
   let failureReport = null;
 
   try {
     recordCleanup = attachRecorder(bus, { idea });
+    relayCleanup = attachRelay(bus);
     if (tuiModule) {
       const tuiResult = await tuiModule.attach(bus, { idea, ...tuiOpts });
       tuiCleanup = tuiResult.cleanup;
@@ -575,6 +578,7 @@ async function runOne(idea, client, { cancellationToken, tuiModule, tuiOpts } = 
     return { ok: false, error };
   } finally {
     if (tuiCleanup) await tuiCleanup();
+    if (relayCleanup) relayCleanup();
     if (recordCleanup) await recordCleanup();
     setBus(null);
     // Print AFTER tuiCleanup so the message survives Ink unmounting and isn't
