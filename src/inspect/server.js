@@ -48,6 +48,24 @@ function liveMiddlewarePlugin({ ideaDir, ideaId }) {
       await seedBrokerFromDisk({ ideaDir, broker, ideaId });
       await rebuilder.flushNow();
 
+      // Register /events/stream BEFORE /events — Connect matches by registration
+      // order and '/events' is a prefix of '/events/stream', so if /events were
+      // first it would intercept stream requests and return 405.
+      server.middlewares.use('/events/stream', (req, res) => {
+        if (req.method !== 'GET') {
+          res.statusCode = 405;
+          res.end();
+          return;
+        }
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('Connection', 'keep-alive');
+        res.flushHeaders?.();
+        const unsubscribe = broker.subscribe(res);
+        res.on('close', unsubscribe);
+      });
+
       server.middlewares.use('/events', (req, res) => {
         if (req.method === 'POST') {
           let body = '';
@@ -88,21 +106,6 @@ function liveMiddlewarePlugin({ ideaDir, ideaId }) {
         }
         res.statusCode = 405;
         res.end();
-      });
-
-      server.middlewares.use('/events/stream', (req, res) => {
-        if (req.method !== 'GET') {
-          res.statusCode = 405;
-          res.end();
-          return;
-        }
-        res.statusCode = 200;
-        res.setHeader('Content-Type', 'text/event-stream');
-        res.setHeader('Cache-Control', 'no-store');
-        res.setHeader('Connection', 'keep-alive');
-        res.flushHeaders?.();
-        const unsubscribe = broker.subscribe(res);
-        res.on('close', unsubscribe);
       });
     },
   };
