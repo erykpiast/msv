@@ -268,6 +268,76 @@ test('generateNicknames de-duplicates colliding nicknames returned by Haiku', as
   assert.equal(result.get('n_002'), 'shared-name-2');
 });
 
+test('generateNicknames calls onError with reason=api_error when runStructuredCall throws', async () => {
+  const client = makeClient(async () => {
+    throw new Error('boom');
+  });
+  const errors = [];
+  const result = await generateNicknames(client, {
+    kind: 'wg',
+    items: [{ id: 'n_001', content: 'x' }],
+    onError: (info) => errors.push(info),
+  });
+  assert.equal(result.size, 0);
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].reason, 'api_error');
+  assert.equal(errors[0].message, 'boom');
+});
+
+test('generateNicknames calls onError with reason=empty_tool_input when nicknames array is missing', async () => {
+  const client = makeClient(async () => ({
+    stop_reason: 'tool_use',
+    content: [{ type: 'tool_use', name: 'emit_nicknames', input: { nicknames: [] } }],
+    usage: { input_tokens: 5, output_tokens: 5 },
+  }));
+  const errors = [];
+  const result = await generateNicknames(client, {
+    kind: 'wg',
+    items: [{ id: 'n_001', content: 'x' }],
+    onError: (info) => errors.push(info),
+  });
+  assert.equal(result.size, 0);
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].reason, 'empty_tool_input');
+});
+
+test('generateNicknames calls onError with reason=all_rejected when every nickname fails sanitisation', async () => {
+  const client = makeClient(async () =>
+    buildToolUseResponse([
+      { id: 'n_001', nickname: '???' },           // sanitisation fails
+      { id: 'n_002', nickname: 'singleword' },    // KEBAB_RE rejects
+    ])
+  );
+  const errors = [];
+  const result = await generateNicknames(client, {
+    kind: 'wg',
+    items: [
+      { id: 'n_001', content: 'a' },
+      { id: 'n_002', content: 'b' },
+    ],
+    onError: (info) => errors.push(info),
+  });
+  assert.equal(result.size, 0);
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].reason, 'all_rejected');
+  assert.equal(errors[0].received, 2);
+  assert.equal(errors[0].valid, 0);
+});
+
+test('generateNicknames does NOT call onError on success', async () => {
+  const client = makeClient(async () =>
+    buildToolUseResponse([{ id: 'n_001', nickname: 'valid-name' }])
+  );
+  const errors = [];
+  const result = await generateNicknames(client, {
+    kind: 'wg',
+    items: [{ id: 'n_001', content: 'x' }],
+    onError: (info) => errors.push(info),
+  });
+  assert.equal(result.size, 1);
+  assert.equal(errors.length, 0);
+});
+
 test('generateNicknames forwards a custom maxTokens to the API call', async () => {
   let capturedMaxTokens;
   const client = makeClient(async (params) => {
@@ -358,10 +428,60 @@ test('attachWorkingGroupNicknames propagates move nickname to surviving claims w
   assert.equal(claim2.nickname, 'base-name-c2');
 });
 
-test('attachWorkingGroupNicknames is a no-op when nicknames map is empty', async () => {
+test('attachWorkingGroupNicknames is a no-op (but observable) when nicknames map is empty', async () => {
   const move = { move_id: 'm_001', type: 'Claim', content: 'x' };
   const result = { moves: [move], observations: [], surviving_claims: [] };
   const client = makeClient(async () => buildToolUseResponse([])); // empty
+  const events = [];
+  const bus = { emit: (name, payload) => events.push({ name, payload }) };
+  await attachWorkingGroupNicknames({
+    client,
+    idea: { id: 'i_test' },
+    result,
+    territory: {},
+    personas: [],
+    bus,
+    territoryId: 't_001',
+  });
+  assert.equal(move.nickname, undefined);
+  const failed = events.find((e) => e.name === 'wg.nicknames.failed');
+  assert.ok(failed, 'wg.nicknames.failed must be emitted on silent failure');
+  assert.equal(failed.payload.territory_id, 't_001');
+  assert.equal(failed.payload.attempted, 1);
+  assert.equal(failed.payload.reason, 'empty_tool_input');
+});
+
+test('attachWorkingGroupNicknames emits failed event with api_error reason when the API throws', async () => {
+  const move = { move_id: 'm_001', type: 'Claim', content: 'x' };
+  const result = { moves: [move], observations: [], surviving_claims: [] };
+  const client = makeClient(async () => {
+    throw new Error('rate limited');
+  });
+  const events = [];
+  const bus = { emit: (name, payload) => events.push({ name, payload }) };
+  await attachWorkingGroupNicknames({
+    client,
+    idea: { id: 'i_test' },
+    result,
+    territory: {},
+    personas: [],
+    bus,
+    territoryId: 't_001',
+  });
+  const failed = events.find((e) => e.name === 'wg.nicknames.failed');
+  assert.ok(failed);
+  assert.equal(failed.payload.reason, 'api_error');
+  assert.equal(failed.payload.detail, 'rate limited');
+});
+
+test('attachWorkingGroupNicknames passes maxTokens=4000 to the API call (50-item batch headroom)', async () => {
+  let capturedMaxTokens;
+  const client = makeClient(async (params) => {
+    capturedMaxTokens = params.max_tokens;
+    return buildToolUseResponse([{ id: 'm_001', nickname: 'test-name' }]);
+  });
+  const move = { move_id: 'm_001', type: 'Claim', content: 'x' };
+  const result = { moves: [move], observations: [], surviving_claims: [] };
   await attachWorkingGroupNicknames({
     client,
     idea: { id: 'i_test' },
@@ -371,7 +491,7 @@ test('attachWorkingGroupNicknames is a no-op when nicknames map is empty', async
     bus: null,
     territoryId: 't_001',
   });
-  assert.equal(move.nickname, undefined);
+  assert.equal(capturedMaxTokens, 4000);
 });
 
 // ---------------------------------------------------------------------------
@@ -408,4 +528,22 @@ test('attachForumNicknames is a no-op when nodes is empty', async () => {
     bus: { emit: () => { emitted = true; } },
   });
   assert.equal(emitted, false);
+});
+
+test('attachForumNicknames emits forum.nicknames.failed when generateNicknames returns empty', async () => {
+  const node = { node_id: 'n_001', content: 'some content' };
+  const client = makeClient(async () => buildToolUseResponse([])); // empty input
+  const events = [];
+  const bus = { emit: (name, payload) => events.push({ name, payload }) };
+  await attachForumNicknames({
+    client,
+    idea: { id: 'i_test' },
+    nodes: [node],
+    bus,
+  });
+  assert.equal(node.nickname, undefined);
+  const failed = events.find((e) => e.name === 'forum.nicknames.failed');
+  assert.ok(failed, 'forum.nicknames.failed must be emitted on silent failure');
+  assert.equal(failed.payload.attempted, 1);
+  assert.equal(failed.payload.reason, 'empty_tool_input');
 });

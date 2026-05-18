@@ -53,7 +53,14 @@ function WorkingGroupGrid({ workingGroups }) {
     ...rows.map((rowEntries, rowIndex) =>
       React.createElement(
         Box,
-        { key: rowIndex, flexDirection: 'row', gap: 1 },
+        {
+          key: rowIndex,
+          flexDirection: 'row',
+          gap: 1,
+          // Card borders abut on adjacent rows otherwise — top border of row N+1
+          // visually merges with bottom border of row N.
+          marginTop: rowIndex === 0 ? 0 : 1,
+        },
         ...rowEntries.map(([id, wg]) =>
           React.createElement(WorkingGroupCard, { key: id, wg })
         )

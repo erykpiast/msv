@@ -129,7 +129,10 @@ function buildUserMessage({ kind, items, context }) {
  *   received a valid sanitised nickname. Empty when items is empty, when the
  *   LLM call failed, or when nothing in the response passed sanitisation.
  */
-async function generateNicknames(client, { kind, items, context = {}, maxTokens = 1200 } = {}) {
+async function generateNicknames(
+  client,
+  { kind, items, context = {}, maxTokens = 1200, onError } = {}
+) {
   if (!Array.isArray(items) || items.length === 0) return new Map();
   if (!client) return new Map();
 
@@ -148,7 +151,10 @@ async function generateNicknames(client, { kind, items, context = {}, maxTokens 
       forceTool: 'emit_nicknames',
     });
     toolUse = result.toolUse;
-  } catch {
+  } catch (err) {
+    if (typeof onError === 'function') {
+      onError({ reason: 'api_error', message: err?.message || String(err) });
+    }
     return new Map();
   }
 
@@ -161,7 +167,15 @@ async function generateNicknames(client, { kind, items, context = {}, maxTokens 
     if (!sane) continue;
     cleaned.push({ id, nickname: sane });
   }
-  return deduplicate(cleaned);
+  const deduped = deduplicate(cleaned);
+  if (deduped.size === 0 && typeof onError === 'function') {
+    onError({
+      reason: raw.length === 0 ? 'empty_tool_input' : 'all_rejected',
+      received: raw.length,
+      valid: cleaned.length,
+    });
+  }
+  return deduped;
 }
 
 // ---------------------------------------------------------------------------
@@ -198,17 +212,41 @@ async function attachWorkingGroupNicknames({
   }
   if (items.length === 0) return;
 
+  // 50 items (20 moves + 30 observations) is the typical WG batch and Haiku
+  // needs ~2000 output tokens to encode all the {id, nickname} entries. The
+  // earlier 1200 cap caused silent truncation: the tool call was cut off,
+  // runStructuredCall threw, and the swallow path returned an empty Map with
+  // no observable evidence. 4000 fits comfortably with headroom.
+  let failure = null;
   const nicknames = await generateNicknames(client, {
     kind: 'wg',
     items,
+    maxTokens: 4000,
     context: {
       topic: idea?.raw_capture,
       territoryName: territory?.name,
       personaNames: (personas || []).map((p) => p?.name).filter(Boolean),
     },
+    onError: (info) => {
+      failure = info;
+    },
   });
 
-  if (nicknames.size === 0) return;
+  if (nicknames.size === 0) {
+    if (bus) bus.emit('wg.nicknames.failed', {
+      territory_id: territoryId,
+      attempted: items.length,
+      reason: failure?.reason || 'unknown',
+      detail: failure?.message || null,
+    });
+    if (idea?.id) {
+      await appendLog(idea.id, `pair-${territoryId}-nicknames`, {
+        kind: 'failed',
+        payload: { attempted: items.length, failure },
+      });
+    }
+    return;
+  }
 
   for (const m of result.moves || []) {
     const nick = nicknames.get(m.move_id);
@@ -252,13 +290,30 @@ async function attachForumNicknames({ client, idea, nodes, bus }) {
     .map((n) => ({ id: n.node_id, content: n.content }));
   if (items.length === 0) return;
 
+  let failure = null;
   const nicknames = await generateNicknames(client, {
     kind: 'forum',
     items,
     context: { topic: idea?.raw_capture },
+    onError: (info) => {
+      failure = info;
+    },
   });
 
-  if (nicknames.size === 0) return;
+  if (nicknames.size === 0) {
+    if (bus) bus.emit('forum.nicknames.failed', {
+      attempted: items.length,
+      reason: failure?.reason || 'unknown',
+      detail: failure?.message || null,
+    });
+    if (idea?.id) {
+      await appendLog(idea.id, 'forum-nicknames', {
+        kind: 'failed',
+        payload: { attempted: items.length, failure },
+      });
+    }
+    return;
+  }
 
   for (const n of nodes) {
     const nick = nicknames.get(n.node_id);

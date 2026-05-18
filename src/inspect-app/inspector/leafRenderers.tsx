@@ -124,7 +124,7 @@ export function renderLeaf(
       if (!obs) return null;
       const cited = obs.cited_finding_ids ?? [];
       return {
-        title: `Observation: ${obs.observation_id}`,
+        title: `Observation: ${obs.nickname ? `${obs.nickname} · ${obs.observation_id}` : obs.observation_id}`,
         body: (
           <Stack gap="xs">
             <Text>{String(obs.content ?? '')}</Text>
@@ -164,7 +164,7 @@ export function renderLeaf(
       const claim = wg?.surviving_claims?.find((c) => c.claim_id === leaf.id);
       if (!claim) return null;
       return {
-        title: `Claim: ${claim.claim_id}`,
+        title: `Claim: ${claim.nickname ? `${claim.nickname} · ${claim.claim_id}` : claim.claim_id}`,
         body: (
           <Stack gap="xs">
             <Text>{String(claim.content ?? '')}</Text>
@@ -184,7 +184,7 @@ export function renderLeaf(
         (e) => e.from_node_id === leaf.id || e.to_node_id === leaf.id
       );
       return {
-        title: `Forum node ${n.node_id}`,
+        title: `Forum node ${n.nickname ? `${n.nickname} · ${n.node_id}` : n.node_id}`,
         body: (
           <Stack gap="xs">
             <Text>{String(n.content ?? '')}</Text>
