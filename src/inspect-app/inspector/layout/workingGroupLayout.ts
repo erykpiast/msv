@@ -7,7 +7,7 @@ const STAGES: WorkingGroupSubstage[] = [
   'ideation', 'adversarial', 'alignment', 'researcher', 'observation', 'debate',
 ];
 
-export function workingGroupLayout(wg: WorkingGroupView): {
+export function workingGroupLayout(wg: WorkingGroupView, territoryId: string): {
   nodes: Node[];
   edges: Edge[];
 } {
@@ -16,7 +16,7 @@ export function workingGroupLayout(wg: WorkingGroupView): {
     id: `substage:${substage}`,
     type: 'subStage',
     position: { x: i * (subStageBox.width + subStageGap), y: 0 },
-    data: { wg, substage, status: substageStatus(wg, substage) },
+    data: { wg, substage, status: substageStatus(wg, substage), territoryId },
     draggable: false,
     selectable: true,
   }));

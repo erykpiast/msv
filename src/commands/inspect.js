@@ -107,7 +107,7 @@ async function runInspectCommand(args) {
 
   let server;
   try {
-    server = await startInspectServer({ ideaDir: resolvedDir, port: opts.port });
+    server = await startInspectServer({ ideaDir: resolvedDir, ideaId: opts.id, port: opts.port });
   } catch (err) {
     process.stderr.write(`vite failed to start: ${err.message}\n`);
     if (err.code === 'EADDRINUSE') {

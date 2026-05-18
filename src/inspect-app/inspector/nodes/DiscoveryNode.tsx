@@ -4,6 +4,7 @@ import type { Node, NodeProps } from '@xyflow/react';
 import { StageNodeShell } from './StageNodeShell';
 import { useExpandedStages } from '../../hooks/useExpandedStages';
 import { useCanvasRoute } from '../../hooks/useHashRoute';
+import { useProgressOverlay } from '../../ViewContext';
 import { expandedWidth } from '../layout/pipelineLayout';
 import type { InvestigationView, StageStatus } from '../../../inspect/types';
 
@@ -14,6 +15,8 @@ export const DiscoveryNode = memo(function DiscoveryNode({ data }: NodeProps<Dis
   const { view, status } = data;
   const { toggle, isExpanded } = useExpandedStages();
   const { route, setRoute } = useCanvasRoute();
+  const overlay = useProgressOverlay();
+  const isLive = overlay.inProgressStages.has('discovery');
   const exp = isExpanded('discovery');
 
   const cand = view.discovery.candidate_personas.length;
@@ -89,6 +92,7 @@ export const DiscoveryNode = memo(function DiscoveryNode({ data }: NodeProps<Dis
     <StageNodeShell
       title="Discovery"
       status={status}
+      isLive={isLive}
       summary={summary}
       width={exp ? expandedWidth.discovery : undefined}
       onActivate={exp ? undefined : () => toggle('discovery')}

@@ -109,7 +109,12 @@ msv inspect <id> --no-open    # don't open the browser; print URL only
 msv inspect <id> --port 6000  # pin the port
 ```
 
-The terminal stays attached until Ctrl-C. Data is read once at mount; re-run `msv inspect <id>` to refresh after a new `msv run`.
+While `msv run <id>` is in progress, `msv inspect <id>` reflects pipeline state
+live — stage nodes animate, drawer content populates as it is produced, and a
+**LIVE** badge appears in the header. No refresh needed. When no run is active,
+the inspector shows the last-persisted snapshot.
+
+The terminal stays attached until Ctrl-C.
 
 ### `msv review`
 

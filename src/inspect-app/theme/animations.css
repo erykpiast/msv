@@ -1,0 +1,18 @@
+[data-status='in_progress'] {
+  border-color: var(--mantine-color-blue-5);
+  animation: msv-pulse-border 1.6s ease-in-out infinite;
+}
+
+@keyframes msv-pulse-border {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.0); }
+  50%      { box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.18); }
+}
+
+[aria-label='status: in_progress'] {
+  animation: msv-blink 1.0s ease-in-out infinite;
+}
+
+@keyframes msv-blink {
+  0%, 100% { opacity: 0.4; }
+  50%      { opacity: 1.0; }
+}

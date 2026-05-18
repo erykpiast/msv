@@ -229,7 +229,7 @@ export type StageKey =
   | 'coordinator_spawn'
   | 'synthesis';
 
-export type StageStatus = 'done' | 'partial' | 'skipped' | 'failed' | 'not_run';
+export type StageStatus = 'done' | 'partial' | 'skipped' | 'failed' | 'not_run' | 'in_progress';
 
 export type Stage = {
   key: StageKey;

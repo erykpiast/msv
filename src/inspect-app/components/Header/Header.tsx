@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { Stack, Group, Title, Text, Alert, Anchor, Grid } from '@mantine/core';
-import { useViewContext } from '../../ViewContext';
+import { Stack, Group, Title, Text, Alert, Anchor, Grid, Badge } from '@mantine/core';
+import { useViewContext, useSseStatus } from '../../ViewContext';
 import { StatusPill } from './StatusPill';
 import { BudgetBar } from './BudgetBar';
 import { Section } from '../../primitives/Section';
@@ -8,6 +8,7 @@ import { formatDuration } from '../../utils/format';
 
 export function Header() {
   const view = useViewContext();
+  const sseStatus = useSseStatus();
   const investigating = view.status === 'investigating';
   const [captureExpanded, setCaptureExpanded] = useState(false);
 
@@ -51,6 +52,12 @@ export function Header() {
           </Group>
           <Group gap="md">
               <StatusPill status={view.status} />
+              {sseStatus === 'live' && (
+                <Badge color="blue" variant="light" size="sm">● LIVE</Badge>
+              )}
+              {sseStatus === 'error' && (
+                <Badge color="red" variant="light" size="sm">● disconnected</Badge>
+              )}
               <Text size="sm" c="dimmed">
                 model: <Text component="span" fw={500}>{view.model ?? '—'}</Text>
               </Text>

@@ -552,6 +552,13 @@ Per-sub-stage log files inside the pair scope keep raw API exchanges debuggable.
 
 **index.json grows.** Where v4's `index.json` was 50–200 KB, v5's lands at 200 KB – 1 MB per idea due to the researcher reports, observations, and richer move metadata. Still small relative to the log volume.
 
+**Inspect & live preview.** `msv inspect <id>` starts a Vite dev server with a
+React SPA that visualises the pipeline graph. During a run, an `event_relay` sink
+attached to the bus POSTs each envelope to the inspect server, which broadcasts
+it over SSE to the open browser tab. See
+[`specs/feat-inspect-live-preview.md`](feat-inspect-live-preview.md) §8.1 for the
+full data-flow diagram.
+
 **Resumability.** `msv run <id>` auto-detects an interrupted run and resumes from the last checkpoint. Checkpoints are written after each macro stage (1–7) and after each sub-stage within stage 4 (working groups). A typed `last_failure` record (`anthropic_unavailable`, `user_cancelled`, `internal_error`) is persisted on failure so the CLI can show actionable messaging. Use `--restart` to force a clean re-run, archiving prior logs under `.attempts/<timestamp>/`. See `specs/feat-investigation-resumption.md` for the full design.
 
 **Status state machine.** Unchanged: `pending` → `investigating` → `ready` → `archived`. The `[d]eeper` follow-up mechanism is unchanged.

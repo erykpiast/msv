@@ -5,6 +5,7 @@ import { StageNodeShell } from './StageNodeShell';
 import { PersonaChip } from '../../primitives/PersonaChip';
 import { usePersonaName } from '../../hooks/usePersonaName';
 import { useSetRoute } from '../../hooks/useHashRoute';
+import { useProgressOverlay } from '../../ViewContext';
 import { tokens } from '../../theme/tokens';
 import type { InvestigationView, StageStatus } from '../../../inspect/types';
 
@@ -16,6 +17,8 @@ export const WorkingGroupNode = memo(function WorkingGroupNode({ data }: NodePro
   const wg = view.working_groups?.[territoryId];
   const setRoute = useSetRoute();
   const personaName = usePersonaName();
+  const overlay = useProgressOverlay();
+  const isLive = overlay.inProgressWg.has(territoryId);
   if (!wg) return null;
   const aligned = wg.aligned_questions?.length ?? 0;
   const claims = wg.surviving_claims?.length ?? 0;
@@ -25,6 +28,7 @@ export const WorkingGroupNode = memo(function WorkingGroupNode({ data }: NodePro
     <StageNodeShell
       title={`WG: ${wg.territory?.name ?? territoryId}`}
       status={status}
+      isLive={isLive}
       width={tokens.wgBox.width}
       summary={
         <Stack gap={2}>

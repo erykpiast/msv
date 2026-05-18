@@ -24,8 +24,8 @@ export function WorkingGroupCanvas({
   const personaName = usePersonaName();
   const wg = view.working_groups?.[route.territoryId];
   const layout = useMemo(
-    () => (wg ? workingGroupLayout(wg) : null),
-    [wg]
+    () => (wg ? workingGroupLayout(wg, route.territoryId) : null),
+    [wg, route.territoryId]
   );
   if (!wg || !layout) {
     return <Empty message={`Working group "${route.territoryId}" not found.`} />;

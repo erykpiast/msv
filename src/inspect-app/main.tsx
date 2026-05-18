@@ -2,6 +2,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { MantineProvider, createTheme } from '@mantine/core';
 import '@mantine/core/styles.css';
+import './theme/animations.css';
 import { Global, css } from '@emotion/react';
 import { App } from './App';
 import { tokens } from './theme/tokens';
