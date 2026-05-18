@@ -7,6 +7,17 @@ class CancellationError extends Error {
   }
 }
 
+// Thrown by api_queue when total retry latency exceeds the per-call wall-clock
+// cap. classifyError treats it as 'anthropic_unavailable'. Exported so tests
+// can construct it directly instead of regex-matching an error message.
+class WallClockCapError extends Error {
+  constructor(message, { cause } = {}) {
+    super(message);
+    this.name = 'WallClockCapError';
+    if (cause !== undefined) this.cause = cause;
+  }
+}
+
 const RETRYABLE_NETWORK_CODES = new Set([
   'ETIMEDOUT',
   'ECONNRESET',
@@ -17,11 +28,14 @@ const RETRYABLE_NETWORK_CODES = new Set([
 
 function classifyError(err) {
   if (err instanceof CancellationError) return 'user_cancelled';
+  if (err instanceof WallClockCapError) return 'anthropic_unavailable';
   const status = err?.status ?? err?.response?.status;
   if (typeof status === 'number' && status >= 500 && status < 600) return 'anthropic_unavailable';
   if (status === 429) return 'anthropic_unavailable';
   const code = err?.code ?? err?.cause?.code;
   if (RETRYABLE_NETWORK_CODES.has(code)) return 'anthropic_unavailable';
+  // Message-shape fallback for legacy callers that throw a plain Error with
+  // the wall-clock-cap text; the instanceof check above is the primary path.
   if (typeof err?.message === 'string' && /exceeded wall-clock cap/.test(err.message)) {
     return 'anthropic_unavailable';
   }
@@ -48,4 +62,4 @@ function actionableMessage({ id, reason, stage, territory_id, sub_stage }) {
   return `✗ ${id} failed (${reason}) at ${where} — resume with: msv run ${id}`;
 }
 
-module.exports = { CancellationError, classifyError, sanitiseMessage, actionableMessage };
+module.exports = { CancellationError, WallClockCapError, classifyError, sanitiseMessage, actionableMessage };

@@ -1,9 +1,23 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const fsp = require('node:fs/promises');
 const path = require('node:path');
+const os = require('node:os');
 const { selectAlignedQuestions, runWorkingGroup, isSubStageComplete, SUBSTAGE_ORDER } = require('../src/working_group');
 const { CancellationError } = require('../src/failure');
+const { setRootForTesting } = require('../src/storage');
+
+// Tests that exercise disk I/O paths (appendLog in sub-stage catch blocks) need
+// a writable storage root. setRootForTesting() avoids the env-var race between
+// test files — process.env.MSV_ROOT is read once at module load, so a second
+// test file setting it would have no effect.
+const WGTEST_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'msv-wg-skip-test-'));
+setRootForTesting(WGTEST_ROOT);
+
+test.after(async () => {
+  await fsp.rm(WGTEST_ROOT, { recursive: true, force: true });
+});
 
 // Test: validates the canonical worked example from spec §6.4.
 // Setup: A has a1(c=8), a2(c=6), a3(c=4); B has b1(c=7), b2(c=5).
@@ -340,6 +354,117 @@ test('wgProgressValue === "adversarial_complete" skips adversarial even when mar
   assert.ok(
     !checkpoints.includes('adversarial'),
     `adversarial should have been skipped but checkpoints were: ${JSON.stringify(checkpoints)}`
+  );
+});
+
+// Shared fixture for both skip-ideation tests below: a previousResult that
+// satisfies the ideation skip-guard (territory_id + non-empty candidate_questions)
+// and the full runWorkingGroup argument bag.
+function makeSkipIdeationArgs({ idea, onCheckpoint, cancellationToken }) {
+  const previousResult = {
+    territory_id: 't1',
+    candidate_questions: [
+      { candidate_id: 'cq_t1_001', question: 'q1', by_persona_id: 'skeptic', predicted_confidence: 7 },
+    ],
+    adversarial_marks: [],
+    aligned_questions: [],
+    researcher_reports: [],
+    observations: [],
+    moves: [],
+    surviving_claims: [],
+    terminated_by: null,
+  };
+  return {
+    client: null,
+    idea,
+    model: 'test',
+    synthesizerModel: 'test',
+    budget: {
+      used_executor_calls: 0,
+      max_executor_calls: 180,
+      used_total_tokens: 0,
+      max_total_tokens: 1500000,
+      used_researcher_tool_calls: 0,
+      max_researcher_tool_calls: 60,
+    },
+    territory: { id: 't1', name: 'T1', assigned_pair: ['skeptic', 'builder'] },
+    personas: [
+      { id: 'skeptic', role: 'skeptic', background: '', research_lens: '' },
+      { id: 'builder', role: 'builder', background: '', research_lens: '' },
+    ],
+    previousResult,
+    wgProgressValue: 'ideation_complete',
+    onCheckpoint,
+    cancellationToken,
+  };
+}
+
+// Test: wgProgressValue = 'ideation_complete' + previousResult with candidate_questions
+// → ideation is NOT re-run. The primary proof is the rejects-predicate: with
+// client=null, any unskipped sub-stage that calls the API would throw TypeError
+// (not CancellationError), failing the predicate. The checkpoints-list check is
+// a secondary readability aid.
+test('previousResult with candidate_questions skips ideation when wgProgressValue = ideation_complete', async () => {
+  const { writeIdea, createIdea } = require('../src/storage');
+  const idea = createIdea('wg-skip-ideation-test');
+  await writeIdea(idea);
+
+  const checkpoints = [];
+  const cancellationToken = { requested: true }; // pre-set so we stop after adversarial
+
+  await assert.rejects(
+    runWorkingGroup(makeSkipIdeationArgs({
+      idea,
+      onCheckpoint: async (e) => { checkpoints.push(e.completedSubStage); },
+      cancellationToken,
+    })),
+    (err) => err instanceof CancellationError
+  );
+
+  // Ideation must NOT appear in checkpoints — it was skipped.
+  assert.ok(
+    !checkpoints.includes('ideation'),
+    `ideation should have been skipped but checkpoints were: ${JSON.stringify(checkpoints)}`
+  );
+});
+
+// Test: cancellationToken.requested set in onCheckpoint (after a sub-stage completes)
+// causes CancellationError before the next sub-stage begins. This verifies
+// cooperative cancellation: the pipeline honours the token at every sub-stage
+// boundary so a SIGINT handler (which sets the token) is respected promptly.
+test('cancellationToken set after adversarial checkpoint triggers CancellationError at alignment', async () => {
+  const { writeIdea, createIdea } = require('../src/storage');
+  const idea = createIdea('wg-cancel-test');
+  await writeIdea(idea);
+
+  const checkpoints = [];
+  const cancellationToken = { requested: false };
+
+  // Set the token when adversarial completes — the next boundary check
+  // (at the end of the alignment stage) must throw CancellationError.
+  const onCheckpoint = async ({ completedSubStage }) => {
+    checkpoints.push(completedSubStage);
+    if (completedSubStage === 'adversarial') {
+      cancellationToken.requested = true;
+    }
+  };
+
+  await assert.rejects(
+    runWorkingGroup(makeSkipIdeationArgs({ idea, onCheckpoint, cancellationToken })),
+    (err) => err instanceof CancellationError
+  );
+
+  // Adversarial must have completed (it was not skipped — wgProgressValue is only
+  // 'ideation_complete', not 'adversarial_complete').
+  assert.ok(
+    checkpoints.includes('adversarial'),
+    `adversarial should have run and checkpointed; got: ${JSON.stringify(checkpoints)}`
+  );
+  // Alignment should NOT have checkpointed — CancellationError fires before its
+  // checkpoint call at the end of the alignment sub-stage.
+  assert.ok(
+    !checkpoints.includes('alignment'),
+    `alignment should not have checkpointed after cancellation; got: ${JSON.stringify(checkpoints)}`
   );
 });
 

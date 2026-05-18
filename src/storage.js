@@ -4,11 +4,22 @@ const os = require('node:os');
 const { v4: uuidv4 } = require('uuid');
 const { MODEL, SYNTHESIZER_MODEL } = require('./models');
 
-const ROOT_DIR = process.env.MSV_ROOT
+let ROOT_DIR = process.env.MSV_ROOT
   ? path.resolve(process.env.MSV_ROOT)
   : path.join(os.homedir(), '.msv');
-const IDEAS_DIR = path.join(ROOT_DIR, 'ideas');
-const ARCHIVE_DIR = path.join(ROOT_DIR, 'archive');
+let IDEAS_DIR = path.join(ROOT_DIR, 'ideas');
+let ARCHIVE_DIR = path.join(ROOT_DIR, 'archive');
+
+// Test-only escape hatch. process.env.MSV_ROOT is read once at module load
+// into ROOT_DIR, so two test files setting the env var sequentially would race
+// on whichever file required storage.js first. setRootForTesting() lets a test
+// hook reconfigure the root at runtime, which is the only way to keep test
+// files isolated from each other.
+function setRootForTesting(dir) {
+  ROOT_DIR = path.resolve(dir);
+  IDEAS_DIR = path.join(ROOT_DIR, 'ideas');
+  ARCHIVE_DIR = path.join(ROOT_DIR, 'archive');
+}
 
 const DEFAULT_BUDGET = {
   max_executor_calls: 180,
@@ -356,4 +367,5 @@ module.exports = {
   archivedIdeaDir,
   ideaWriteMutex,
   _ideaMutexSize,
+  setRootForTesting,
 };
