@@ -35,6 +35,8 @@ const EVENTS = Object.freeze({
   WG_DEBATE_START: 'wg.debate.start',
   WG_DEBATE_DONE: 'wg.debate.done',
   WG_MOVE: 'wg.move',
+  WG_NICKNAMES_DONE: 'wg.nicknames.done',
+  WG_NICKNAMES_FAILED: 'wg.nicknames.failed',
   WG_END: 'wg.end',
   WG_FAILED: 'wg.failed',
 
@@ -42,6 +44,8 @@ const EVENTS = Object.freeze({
   CROSS_POLLINATION_DONE: 'cross_pollination.done',
 
   FORUM_CONTRADICTION_JUDGED: 'forum.contradiction.judged',
+  FORUM_NICKNAMES_DONE: 'forum.nicknames.done',
+  FORUM_NICKNAMES_FAILED: 'forum.nicknames.failed',
   FORUM_DONE: 'forum.done',
 
   SYNTHESIZER_DONE: 'synthesizer.done',

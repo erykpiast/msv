@@ -204,6 +204,8 @@ The v4 `pair_debates[].sub_question_id` field is **removed**. v5 pair_debates en
 
 **`pair_debates[].surviving_claims[]` entries gain `evidence_refs[]`** copied from the originating Claim move.
 
+**Cosmetic `nickname?: string`** is attached after each working group and after the forum builds. Two batched Haiku calls per run (one per WG + one for the forum) produce a kebab-case display label for every move, observation, surviving claim, and forum node. The field is optional and absent on older logs or when the nicknamer's LLM call failed; the canonical IDs are unchanged. Surviving claims inherit their originating move's nickname; additional claims off the same move get `-c2`, `-c3` suffixes.
+
 **`forum` gains:**
 
 ```json

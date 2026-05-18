@@ -16,6 +16,11 @@ function MoveLine({ move, personaName }: { move: Move; personaName: (id: string)
     >
       <Group justify="space-between" align="flex-start">
         <Group gap={6}>
+          {move.nickname ? (
+            <Text size="xs" fw={700}>
+              {move.nickname}
+            </Text>
+          ) : null}
           <Text size="xs" fw={600} c="dimmed">
             {move.move_id}
           </Text>

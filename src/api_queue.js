@@ -95,15 +95,23 @@ function retryAfterMs(error, attempt) {
   return Math.min(BACKOFF_BASE_MS * 2 ** (attempt - 1) + jitter, BACKOFF_MAX_MS);
 }
 
-// Race fn() against a setTimeout. Timer is unref'd so a stale timer can't keep
-// the event loop alive, and is cleared on settle so we don't leak handles.
+// Race fn() against a setTimeout. fn receives an AbortSignal it MUST plumb
+// into the underlying SDK call so a timeout actually tears down the in-flight
+// request rather than orphaning it. Without that, the SDK keeps streaming
+// server-side and event listeners keep firing into closures the caller has
+// already given up on (seen in production: a discovery turn that emitted its
+// final tool_use ~10s after the queue had already rejected the attempt).
 function runWithAttemptTimeout(fn, ms) {
+  const ac = new AbortController();
   let timer;
   let timedOut = false;
-  const callPromise = Promise.resolve().then(fn);
+  const callPromise = Promise.resolve().then(() => fn(ac.signal));
   const timeoutPromise = new Promise((_, reject) => {
     timer = setTimeout(() => {
       timedOut = true;
+      // Abort first so the request tears down, THEN reject — otherwise the
+      // queue's slot bookkeeping releases before the socket does.
+      try { ac.abort(); } catch (_) { /* AbortController.abort never throws, defensive */ }
       const err = new Error(`API attempt exceeded per-attempt timeout (${ms}ms)`);
       err.code = 'EATTEMPTTIMEOUT';
       reject(err);
@@ -113,6 +121,8 @@ function runWithAttemptTimeout(fn, ms) {
   return Promise.race([callPromise, timeoutPromise]).finally(() => {
     clearTimeout(timer);
     if (timedOut) {
+      // The aborted call will eventually reject with an AbortError; swallow it
+      // so it doesn't surface as an unhandled rejection.
       callPromise.catch(() => {});
     }
   });

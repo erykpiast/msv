@@ -61,6 +61,10 @@ export type Finding = {
   source_url?: string;
   source_title?: string;
   quality?: 'primary' | 'secondary' | 'indirect';
+  /** Cosmetic display label set by the per-sub-stage WG nicknamer at the end
+   * of the researcher sub-stage. Absent on older logs predating the
+   * researcher-stage nicknamer or when the nicknamer's LLM call failed. */
+  nickname?: string;
 };
 
 export type ResearcherReport = {
@@ -78,6 +82,9 @@ export type Observation = {
   report_id: string;
   content: string;
   cited_finding_ids: string[];
+  /** Cosmetic display label set by the per-sub-stage WG nicknamer. Absent on older
+   * logs predating the nicknamer or when the nicknamer's LLM call failed. */
+  nickname?: string;
 };
 
 export type DeadEndQuestion = {
@@ -123,6 +130,9 @@ export type Move = {
   usage?: TokenUsage | null;
   // v5 only — observation and finding citations for Claims
   evidence_refs?: EvidenceRef[];
+  /** Cosmetic display label set by the per-sub-stage WG nicknamer. Absent on older
+   * logs predating the nicknamer or when the nicknamer's LLM call failed. */
+  nickname?: string;
 };
 
 export type TokenUsage = {
@@ -137,6 +147,10 @@ export type SurvivingClaim = {
   content: string;
   confidence_after_debate: number;
   concession_status?: string | null;
+  /** Cosmetic display label propagated from the originating move's nickname.
+   * Additional claims off the same move get -c2, -c3 suffixes. Absent when
+   * the originating move has no nickname. */
+  nickname?: string;
 };
 
 export type ReactionType = 'Rebut' | 'Concede' | 'Question' | 'Support';
@@ -157,6 +171,10 @@ export type CrossPollinationEntry = {
 
 export type ForumNode = {
   node_id: string;
+  /** Cosmetic display label set by the end-of-forum nicknamer. Absent on
+   * older logs predating the nicknamer, when the nicknamer's LLM call
+   * failed, or when the node had no usable content to name. */
+  nickname?: string;
   claim_id: string;
   /**
    * Invariant: equals a key in InvestigationView.debates — currently the

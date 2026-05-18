@@ -20,7 +20,14 @@ export const tokens = {
   },
   pipelineRowY: 220,
   stageBox: { width: 180, heightCollapsed: 110 },
-  wgBox: { width: 200, heightCollapsed: 96 },
+  // heightCollapsed is the worst-case rendered card height: 2-line wrapped
+  // title + status pip on its own row (Mantine Group wraps when the title is
+  // long) + aligned/claims badges + footer with up to two pair-pill rows
+  // (PersonaChip labels like "Cognitive Science of Exper…" force the Group to
+  // wrap). The visible gap between adjacent cards is `slot − rendered_height`
+  // where `slot = heightCollapsed + wgStackGap`; sizing heightCollapsed for
+  // the worst-case card means the minimum visible gap is always `wgStackGap`.
+  wgBox: { width: 200, heightCollapsed: 180 },
   wgStackGap: 30,
   subStageBox: { width: 170, height: 92 },
   subStageGap: 30,

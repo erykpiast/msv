@@ -3,6 +3,7 @@ import { HoverCard, Text, Stack, Box } from '@mantine/core';
 
 type ForumNodeData = {
   nodeLabel: string;
+  nickname?: string;
   groupId: string;
   color: string;
   content: string;
@@ -13,6 +14,7 @@ type ForumNodeData = {
 export function ForumNodeView({ data }: NodeProps) {
   const d = data as unknown as ForumNodeData;
   const size = Math.max(34, Math.min(78, 34 + d.confidence * 4.5));
+  const header = d.nickname ? `${d.nickname} · ${d.nodeLabel}` : d.nodeLabel;
   return (
     <HoverCard width={340} shadow="md" withinPortal position="top" openDelay={120}>
       <HoverCard.Target>
@@ -65,7 +67,7 @@ export function ForumNodeView({ data }: NodeProps) {
       <HoverCard.Dropdown>
         <Stack gap={4}>
           <Text size="xs" c="dimmed" fw={600}>
-            {d.nodeLabel} · {d.groupId} · conf {d.confidence.toFixed(1)}
+            {header} · {d.groupId} · conf {d.confidence.toFixed(1)}
           </Text>
           <Text size="sm" lh={1.4}>
             {d.content}

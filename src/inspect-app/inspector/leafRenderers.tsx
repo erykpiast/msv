@@ -123,14 +123,27 @@ export function renderLeaf(
       const obs = wg?.observations?.find((o) => o.observation_id === leaf.id);
       if (!obs) return null;
       const cited = obs.cited_finding_ids ?? [];
+      // Resolve finding nicknames so the citation list reads as
+      // "cites: friction-cliff (f_xxx), cold-start-tax (f_yyy)" instead of
+      // raw IDs.
+      const findingNickById = new Map<string, string>();
+      for (const rr of wg?.researcher_reports ?? []) {
+        for (const f of rr.findings ?? []) {
+          if (f.nickname) findingNickById.set(f.finding_id, f.nickname);
+        }
+      }
+      const citedLabels = cited.map((id) => {
+        const nick = findingNickById.get(id);
+        return nick ? `${nick} (${id})` : id;
+      });
       return {
-        title: `Observation: ${obs.observation_id}`,
+        title: `Observation: ${obs.nickname ? `${obs.nickname} · ${obs.observation_id}` : obs.observation_id}`,
         body: (
           <Stack gap="xs">
             <Text>{String(obs.content ?? '')}</Text>
-            {cited.length > 0 && (
+            {citedLabels.length > 0 && (
               <Text size="sm" c="dimmed">
-                cites: {cited.join(', ')}
+                cites: {citedLabels.join(', ')}
               </Text>
             )}
           </Stack>
@@ -164,7 +177,7 @@ export function renderLeaf(
       const claim = wg?.surviving_claims?.find((c) => c.claim_id === leaf.id);
       if (!claim) return null;
       return {
-        title: `Claim: ${claim.claim_id}`,
+        title: `Claim: ${claim.nickname ? `${claim.nickname} · ${claim.claim_id}` : claim.claim_id}`,
         body: (
           <Stack gap="xs">
             <Text>{String(claim.content ?? '')}</Text>
@@ -184,7 +197,7 @@ export function renderLeaf(
         (e) => e.from_node_id === leaf.id || e.to_node_id === leaf.id
       );
       return {
-        title: `Forum node ${n.node_id}`,
+        title: `Forum node ${n.nickname ? `${n.nickname} · ${n.node_id}` : n.node_id}`,
         body: (
           <Stack gap="xs">
             <Text>{String(n.content ?? '')}</Text>

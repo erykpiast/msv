@@ -28,6 +28,60 @@ const EMIT_RESEARCHER_REPORT_TOOL = {
 // dead-ends. 180s comfortably covers the observed envelope with headroom.
 const RESEARCHER_TIMEOUT_MS = 180_000;
 
+// Coerce a tool-input field that should be an array. The Anthropic tool-use API
+// does not enforce input_schema shape, so the model sometimes returns a JSON
+// string instead of an array (observed in production: a 12,163-char stringified
+// findings array crashed downstream .map). Try one JSON.parse pass; if it still
+// isn't an array, give up and return null.
+function coerceArray(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) return parsed;
+    } catch {
+      // fall through
+    }
+  }
+  return null;
+}
+
+async function normalizeReport(rawInput, { ideaId, logFile, alignedId }) {
+  const input = rawInput && typeof rawInput === 'object' ? rawInput : {};
+  const findingsRaw = input.findings;
+  const traceRaw = input.search_trace;
+
+  const findings = coerceArray(findingsRaw);
+  const searchTrace = coerceArray(traceRaw);
+
+  const issues = [];
+  if (findings === null) issues.push('findings');
+  if (searchTrace === null) issues.push('search_trace');
+
+  if (issues.length > 0) {
+    await appendLog(ideaId, logFile, {
+      kind: 'malformed_emit',
+      payload: {
+        aligned_id: alignedId,
+        fields: issues,
+        findings_type: Array.isArray(findingsRaw) ? 'array' : typeof findingsRaw,
+        search_trace_type: Array.isArray(traceRaw) ? 'array' : typeof traceRaw,
+      },
+    });
+  }
+
+  // Force dead_end when findings are unrecoverable — downstream consumers gate
+  // on findings.length, and an empty array with outcome=useful would misreport
+  // the territory's state.
+  const outcome = findings === null ? 'dead_end' : input.outcome;
+
+  return {
+    outcome,
+    findings: findings || [],
+    search_trace: searchTrace || [],
+  };
+}
+
 async function runJointResearcher({
   client,
   idea,
@@ -182,20 +236,25 @@ async function runJointResearcher({
     );
 
     if (reportBlock) {
+      const normalized = await normalizeReport(reportBlock.input, {
+        ideaId: idea.id,
+        logFile,
+        alignedId: aqId,
+      });
       await appendLog(idea.id, logFile, {
         kind: 'emit',
         payload: {
-          outcome: reportBlock.input?.outcome,
-          finding_count: (reportBlock.input?.findings || []).length,
+          outcome: normalized.outcome,
+          finding_count: normalized.findings.length,
         },
       });
       if (bus) bus.emit('wg.researcher.done', {
         territory_id: territoryId,
         aligned_id: aqId,
-        outcome: reportBlock.input?.outcome,
-        finding_count: (reportBlock.input?.findings || []).length,
+        outcome: normalized.outcome,
+        finding_count: normalized.findings.length,
       });
-      return reportBlock.input;
+      return normalized;
     }
 
     // Append assistant turn and continue.
@@ -216,4 +275,4 @@ async function runJointResearcher({
   return { outcome: 'dead_end', findings: [], search_trace: [] };
 }
 
-module.exports = { runJointResearcher };
+module.exports = { runJointResearcher, normalizeReport, coerceArray };

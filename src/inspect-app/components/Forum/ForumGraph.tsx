@@ -47,6 +47,7 @@ export function ForumGraph({
         position: { x: n.x, y: n.y },
         data: {
           nodeLabel: n.node_id,
+          nickname: n.nickname,
           groupId: n.working_group_id,
           color: groupColor(n.working_group_id),
           content: n.content,

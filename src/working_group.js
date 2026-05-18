@@ -27,6 +27,7 @@ const {
 } = require('./moves');
 const { appendLog, safeSlug } = require('./storage');
 const { CancellationError } = require('./failure');
+const { attachWorkingGroupNicknames } = require('./nicknamer');
 
 // territory.id is the canonical key, but coordinator-emitted territory_id is
 // preserved as a fallback for any code path that constructs from raw model output.
@@ -396,6 +397,16 @@ async function runWorkingGroup({
     if (cancellationToken?.requested) {
       throw new CancellationError(`cancelled at ${territoryId} alignment`);
     }
+    await attachWorkingGroupNicknames({
+      client,
+      idea,
+      result,
+      territory,
+      personas: pairPersonas,
+      bus,
+      territoryId: safeTerritoryId,
+      subStage: 'alignment',
+    });
     await onCheckpoint?.({ partialResult: result, completedSubStage: 'alignment' });
   }
 
@@ -478,6 +489,16 @@ async function runWorkingGroup({
     if (cancellationToken?.requested) {
       throw new CancellationError(`cancelled at ${territoryId} researcher`);
     }
+    await attachWorkingGroupNicknames({
+      client,
+      idea,
+      result,
+      territory,
+      personas: pairPersonas,
+      bus,
+      territoryId: safeTerritoryId,
+      subStage: 'researcher',
+    });
     await onCheckpoint?.({ partialResult: result, completedSubStage: 'researcher' });
   }
 
@@ -563,6 +584,16 @@ async function runWorkingGroup({
     if (cancellationToken?.requested) {
       throw new CancellationError(`cancelled at ${territoryId} observation`);
     }
+    await attachWorkingGroupNicknames({
+      client,
+      idea,
+      result,
+      territory,
+      personas: pairPersonas,
+      bus,
+      territoryId: safeTerritoryId,
+      subStage: 'observation',
+    });
     await onCheckpoint?.({ partialResult: result, completedSubStage: 'observation' });
   }
   if (bus) bus.emit('wg.observation.done', {
@@ -734,6 +765,16 @@ async function runWorkingGroup({
       ? 'mutual_concession'
       : 'budget_exhausted';
 
+    await attachWorkingGroupNicknames({
+      client,
+      idea,
+      result,
+      territory,
+      personas: pairPersonas,
+      bus,
+      territoryId: safeTerritoryId,
+      subStage: 'debate',
+    });
     await onCheckpoint?.({ partialResult: result, completedSubStage: 'debate' });
     if (cancellationToken?.requested) {
       throw new CancellationError(`cancelled at ${territoryId} debate`);
@@ -747,6 +788,11 @@ async function runWorkingGroup({
     claim_count: result.surviving_claims.length,
     terminated_by: result.terminated_by,
   });
+
+  // Nicknames are now attached incrementally inside each sub-stage block
+  // above (alignment / researcher / observation / debate) so the dashboard
+  // and inspect view see readable handles as soon as entities exist, and so
+  // resumed WGs don't re-name already-named entities. No end-of-WG batch.
 
   if (bus) bus.emit('wg.end', {
     territory_id: safeTerritoryId,
