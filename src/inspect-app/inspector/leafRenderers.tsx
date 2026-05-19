@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { Badge, Group, Skeleton, Stack, Text } from '@mantine/core';
+import { Anchor, Badge, Group, Skeleton, Stack, Text } from '@mantine/core';
 import type { InvestigationView, Move, WorkingGroupView } from '../../inspect/types';
 import { isAlignmentMove } from '../utils/moveStage';
 import type { ProgressOverlay } from '../hooks/useLiveProgress';
@@ -318,39 +318,126 @@ export function renderLeaf(
     case 'synthesis': {
       const s = view.synthesis;
       if (!s) return null;
-      return {
-        title: 'Synthesis',
-        body: (
-          <Stack gap="sm">
-            <Markdown>{s.report}</Markdown>
-            {s.headline_findings.length > 0 && (
-              <Stack gap={2}>
-                <Text fw={600}>Headline findings</Text>
-                {s.headline_findings.map((f, i) => (
-                  <Text key={i}>· {f}</Text>
+
+      const hasStructured = !!(s.sections?.length);
+
+      const body = hasStructured ? (
+        <Stack gap="xl">
+          {s.sections!.map((section, i) => (
+            <Stack key={i} gap="xs">
+              <Text fw={700} size="lg">{section.area_title}</Text>
+              <Text c="dimmed" size="sm">{section.area_summary}</Text>
+              <Stack gap={4}>
+                {section.key_findings.map((f, j) => (
+                  <Group key={j} gap="xs" align="flex-start">
+                    <Badge
+                      size="xs"
+                      color={f.confidence === 'high' ? 'green' : f.confidence === 'medium' ? 'yellow' : 'gray'}
+                      variant="light"
+                    >
+                      {f.confidence}
+                    </Badge>
+                    <Text size="sm" style={{ flex: 1 }}>
+                      <Markdown>{f.content}</Markdown>
+                    </Text>
+                  </Group>
                 ))}
               </Stack>
-            )}
-            {s.question_landscape && (
-              <Stack gap={2}>
-                <Text fw={600}>Question landscape</Text>
-                {s.question_landscape.map((q, i) => (
-                  <Text key={i} size="sm">
-                    {q.territory_name}: {q.questions.length} questions
-                  </Text>
+            </Stack>
+          ))}
+
+          {s.tension_points && s.tension_points.length > 0 && (
+            <Stack gap="xs">
+              <Text fw={700} size="md">Tension points</Text>
+              {s.tension_points.map((tp, i) => (
+                <Stack key={i} gap={4} p="sm" style={{ borderLeft: '3px solid var(--mantine-color-orange-5)' }}>
+                  <Text fw={600} size="sm">{tp.title}</Text>
+                  <Text size="sm">{tp.description}</Text>
+                  {tp.sides.map((side, j) => (
+                    <Text key={j} size="xs" c="dimmed">
+                      <strong>{side.label}:</strong> {side.position}
+                    </Text>
+                  ))}
+                  {tp.resolution && (
+                    <Text size="xs" c="teal">Resolved: {tp.resolution}</Text>
+                  )}
+                </Stack>
+              ))}
+            </Stack>
+          )}
+
+          {s.key_references && s.key_references.length > 0 && (
+            <Stack gap="xs">
+              <Text fw={700} size="md">Most relevant references</Text>
+              {s.key_references.map((ref, i) => (
+                <Stack key={i} gap={2} p="sm" style={{ background: 'var(--mantine-color-dark-6)', borderRadius: 4 }}>
+                  <Anchor href={ref.url} target="_blank" rel="noopener noreferrer" size="sm" fw={600}>
+                    {i + 1}. {ref.title}
+                  </Anchor>
+                  <Text size="sm">{ref.summary}</Text>
+                  <Stack gap={2} mt={4}>
+                    {ref.key_observations.map((obs, j) => (
+                      <Text key={j} size="xs" c="dimmed">· {obs}</Text>
+                    ))}
+                  </Stack>
+                </Stack>
+              ))}
+            </Stack>
+          )}
+
+          {s.next_pass_proposals && s.next_pass_proposals.length > 0 && (
+            <Stack gap="xs">
+              <Text fw={700} size="md">Dig deeper — next pass proposals</Text>
+              <Text size="xs" c="dimmed">Topics worth exploring in a follow-up investigation.</Text>
+              <Stack gap={4}>
+                {s.next_pass_proposals.map((p, i) => (
+                  <Stack key={i} gap={2}>
+                    <Text size="sm"><strong>{i + 1}. {p.topic}</strong></Text>
+                    <Text size="xs" c="dimmed">{p.rationale}</Text>
+                  </Stack>
                 ))}
               </Stack>
-            )}
-            {s.dead_end_summary && (
-              <Stack gap={2}>
-                <Text fw={600}>Dead-end summary</Text>
-                <Text size="sm">{s.dead_end_summary}</Text>
-              </Stack>
-            )}
-          </Stack>
-        ),
-        raw: s.report,
-      };
+            </Stack>
+          )}
+
+          {s.dead_end_summary && (
+            <Stack gap={2}>
+              <Text fw={600} size="sm">Dead ends</Text>
+              <Text size="sm" c="dimmed">{s.dead_end_summary}</Text>
+            </Stack>
+          )}
+        </Stack>
+      ) : (
+        <Stack gap="sm">
+          <Markdown>{s.report}</Markdown>
+          {s.headline_findings.length > 0 && (
+            <Stack gap={2}>
+              <Text fw={600}>Headline findings</Text>
+              {s.headline_findings.map((f, i) => (
+                <Text key={i}>· {f}</Text>
+              ))}
+            </Stack>
+          )}
+          {s.question_landscape && (
+            <Stack gap={2}>
+              <Text fw={600}>Question landscape</Text>
+              {s.question_landscape.map((q, i) => (
+                <Text key={i} size="sm">
+                  {q.territory_name}: {q.questions.length} questions
+                </Text>
+              ))}
+            </Stack>
+          )}
+          {s.dead_end_summary && (
+            <Stack gap={2}>
+              <Text fw={600}>Dead-end summary</Text>
+              <Text size="sm">{s.dead_end_summary}</Text>
+            </Stack>
+          )}
+        </Stack>
+      );
+
+      return { title: 'Synthesis', body, raw: s.report };
     }
     case 'wgPanel': {
       const territoryId = context?.territoryId;

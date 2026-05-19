@@ -340,6 +340,42 @@ export type ForumView = {
   contradiction_verdicts: Record<string, ContradictionVerdict>;
 };
 
+export type SynthesisSection = {
+  area_title: string;
+  area_summary: string;
+  key_findings: SynthesisFinding[];
+};
+
+export type SynthesisFinding = {
+  content: string;
+  confidence: 'high' | 'medium' | 'low';
+};
+
+export type SynthesisTensionPoint = {
+  title: string;
+  description: string;
+  sides: SynthesisSide[];
+  resolution: string | null;
+};
+
+export type SynthesisSide = {
+  label: string;
+  position: string;
+};
+
+export type SynthesisReference = {
+  url: string;
+  title: string;
+  summary: string;
+  key_observations: string[];
+};
+
+export type SynthesisNextPassProposal = {
+  topic: string;
+  rationale: string;
+  territory_hint?: string;
+};
+
 export type SynthesisView = {
   report: string;
   headline_findings: string[];
@@ -347,6 +383,11 @@ export type SynthesisView = {
   // v5 only
   question_landscape?: QuestionLandscapeEntry[];
   dead_end_summary?: string;
+  // v5 structured report fields (added 2026-05-19)
+  sections?: SynthesisSection[];
+  tension_points?: SynthesisTensionPoint[];
+  key_references?: SynthesisReference[];
+  next_pass_proposals?: SynthesisNextPassProposal[];
 } | null;
 
 export type PersonaInteractionCell = {

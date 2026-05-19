@@ -7,10 +7,10 @@ const { appendLog } = require('../storage');
 const EMIT_SYNTHESIS_TOOL = {
   name: 'emit_synthesis',
   description:
-    'Emit the user-facing report, headline_findings, open_tensions, question_landscape, and dead_end_summary.',
+    'Emit the structured report: sections with findings, tension points, key references, and next-pass proposals.',
   input_schema: {
     type: 'object',
-    required: ['headline_findings', 'open_tensions', 'report'],
+    required: ['headline_findings', 'open_tensions', 'report', 'sections'],
     additionalProperties: false,
     properties: {
       headline_findings: {
@@ -55,6 +55,100 @@ const EMIT_SYNTHESIS_TOOL = {
         type: 'string',
         description: '1–3 sentences about what was pursued and not found.',
       },
+      sections: {
+        type: 'array',
+        description: 'Broad thematic areas, each with key findings. List broad areas first, then the most specific/surprising findings within each.',
+        minItems: 2,
+        maxItems: 6,
+        items: {
+          type: 'object',
+          required: ['area_title', 'area_summary', 'key_findings'],
+          additionalProperties: false,
+          properties: {
+            area_title: { type: 'string' },
+            area_summary: { type: 'string', description: '2–3 sentences framing the area.' },
+            key_findings: {
+              type: 'array',
+              minItems: 1,
+              maxItems: 5,
+              items: {
+                type: 'object',
+                required: ['content', 'confidence'],
+                additionalProperties: false,
+                properties: {
+                  content: { type: 'string', description: 'One finding. Use inline markdown links [title](url) to cite sources from the provided reference list.' },
+                  confidence: { type: 'string', enum: ['high', 'medium', 'low'] },
+                },
+              },
+            },
+          },
+        },
+      },
+      tension_points: {
+        type: 'array',
+        description: 'The sharpest disagreements between agents or working groups in this investigation.',
+        maxItems: 4,
+        items: {
+          type: 'object',
+          required: ['title', 'description', 'sides'],
+          additionalProperties: false,
+          properties: {
+            title: { type: 'string' },
+            description: { type: 'string', description: 'What the crux of the disagreement is, in 1–3 sentences.' },
+            sides: {
+              type: 'array',
+              minItems: 2,
+              items: {
+                type: 'object',
+                required: ['label', 'position'],
+                additionalProperties: false,
+                properties: {
+                  label: { type: 'string', description: 'Persona name, working group id, or short descriptor.' },
+                  position: { type: 'string', description: 'Their position in one sentence.' },
+                },
+              },
+            },
+            resolution: { type: ['string', 'null'], description: 'How the tension resolved, or null if genuinely unresolved.' },
+          },
+        },
+      },
+      key_references: {
+        type: 'array',
+        description: 'The most relevant sources cited in the investigation. Only include sources that materially shaped the findings.',
+        maxItems: 8,
+        items: {
+          type: 'object',
+          required: ['url', 'title', 'summary', 'key_observations'],
+          additionalProperties: false,
+          properties: {
+            url: { type: 'string' },
+            title: { type: 'string' },
+            summary: { type: 'string', description: '1–2 sentences on what this source says.' },
+            key_observations: {
+              type: 'array',
+              minItems: 1,
+              maxItems: 3,
+              items: { type: 'string' },
+            },
+          },
+        },
+      },
+      next_pass_proposals: {
+        type: 'array',
+        description: 'Specific topics worth investigating in a follow-up pass. Order by relevance, most promising first.',
+        minItems: 3,
+        maxItems: 6,
+        items: {
+          type: 'object',
+          required: ['topic', 'rationale'],
+          additionalProperties: false,
+          properties: {
+            topic: { type: 'string' },
+            rationale: { type: 'string', description: '1–2 sentences on why this is worth the next pass.' },
+            territory_hint: { type: 'string', description: 'Which territory this relates to, if applicable.' },
+          },
+        },
+      },
     },
   },
 };
@@ -96,6 +190,36 @@ function renderQuestionLandscape(pairDebates) {
     .join('\n\n');
 }
 
+const QUALITY_ORDER = { primary: 0, secondary: 1, indirect: 2 };
+
+function renderFindings(pairDebates) {
+  const seen = new Set();
+  const refs = [];
+  for (const pd of (pairDebates || [])) {
+    for (const rr of (pd.researcher_reports || [])) {
+      for (const f of (rr.findings || [])) {
+        if (!f.source_url || seen.has(f.source_url)) continue;
+        seen.add(f.source_url);
+        refs.push({
+          url: f.source_url,
+          title: (f.source_title || f.source_url).slice(0, 120),
+          content: (f.content || '').slice(0, 200),
+          quality: f.quality || 'secondary',
+        });
+      }
+    }
+  }
+  refs.sort((a, b) => (QUALITY_ORDER[a.quality] ?? 3) - (QUALITY_ORDER[b.quality] ?? 3));
+  return refs.slice(0, 30);
+}
+
+function renderFindingsText(refs) {
+  if (refs.length === 0) return '(no source URLs in this run)';
+  return refs
+    .map((r) => `- ${r.title} — ${r.url} (quality: ${r.quality})\n  ${r.content}`)
+    .join('\n');
+}
+
 function renderDeadEnds(forum) {
   const deadEnds = forum.dead_end_questions || [];
   if (deadEnds.length === 0) return '(none)';
@@ -109,6 +233,8 @@ async function runSynthesizer({ client, idea, model, budget, forum, personas, pa
   const personaDump = renderPersonas(personas);
   const questionLandscape = renderQuestionLandscape(pairDebates);
   const deadEnds = renderDeadEnds(forum);
+  const findingRefs = renderFindings(pairDebates);
+  const findingsDump = renderFindingsText(findingRefs);
 
   await appendLog(idea.id, 'synthesizer', {
     kind: 'request',
@@ -116,6 +242,7 @@ async function runSynthesizer({ client, idea, model, budget, forum, personas, pa
       node_count: forum.nodes?.length || 0,
       dead_end_count: (forum.dead_end_questions || []).length,
       persona_count: personas.length,
+      finding_ref_count: findingRefs.length,
     },
   });
 
@@ -124,7 +251,7 @@ async function runSynthesizer({ client, idea, model, budget, forum, personas, pa
     model,
     budget,
     system: SYNTHESIZER,
-    maxTokens: 5000,
+    maxTokens: 6500,
     messages: [
       {
         role: 'user',
@@ -134,6 +261,7 @@ async function runSynthesizer({ client, idea, model, budget, forum, personas, pa
           `\nForum (ranked nodes):\n${forumDump}`,
           `\nQuestion landscape (what each territory investigated):\n${questionLandscape}`,
           `\nDead-end questions (research avenues with no useful findings):\n${deadEnds}`,
+          `\nSource reference list (cite as inline markdown links in findings):\n${findingsDump}`,
           `\nProduce the final report. Invoke emit_synthesis.`,
         ].join('\n'),
       },
@@ -141,7 +269,7 @@ async function runSynthesizer({ client, idea, model, budget, forum, personas, pa
     tools: [EMIT_SYNTHESIS_TOOL],
     forceTool: 'emit_synthesis',
     // The synthesizer consumes the full forum, persona roster, and question
-    // landscape in one shot, then emits a 5k-token tool call. Observed wall-clock
+    // landscape in one shot, then emits a 6.5k-token tool call. Observed wall-clock
     // is 60–120s; the default 60s SDK cap was timing out on rich investigations.
     timeoutMs: 180_000,
   });
@@ -155,6 +283,7 @@ async function runSynthesizer({ client, idea, model, budget, forum, personas, pa
       usage,
       headline_count: (payload.headline_findings || []).length,
       report_chars: (payload.report || '').length,
+      section_count: (payload.sections || []).length,
     },
   });
 
@@ -163,6 +292,7 @@ async function runSynthesizer({ client, idea, model, budget, forum, personas, pa
     tension_count: (payload.open_tensions || []).length,
     has_question_landscape: !!(payload.question_landscape),
     has_dead_end_summary: !!(payload.dead_end_summary),
+    section_count: (payload.sections || []).length,
   });
 
   return {
@@ -172,10 +302,16 @@ async function runSynthesizer({ client, idea, model, budget, forum, personas, pa
     open_tensions: payload.open_tensions,
     question_landscape: payload.question_landscape || null,
     dead_end_summary: payload.dead_end_summary || null,
+    sections: payload.sections || null,
+    tension_points: payload.tension_points || null,
+    key_references: payload.key_references || null,
+    next_pass_proposals: payload.next_pass_proposals || null,
     usage,
   };
 }
 
 module.exports = {
   runSynthesizer,
+  renderFindings,
+  renderFindingsText,
 };
