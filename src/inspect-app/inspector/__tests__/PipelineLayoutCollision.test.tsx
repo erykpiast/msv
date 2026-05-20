@@ -44,6 +44,58 @@ describe('pipelineLayout collision', () => {
     }
   });
 
+  it('derives WG status from terminated_by: failed terminations show as failed', () => {
+    const base = loadFixture('ready-v5');
+    const wg = base.working_groups['t_001']!;
+    const cases: Array<[string, 'done' | 'failed' | 'partial' | 'not_run']> = [
+      ['mutual_concession', 'done'],
+      ['budget_exhausted', 'done'],
+      ['ideation_failure', 'failed'],
+      ['alignment_failure', 'failed'],
+      ['all_dead_end', 'failed'],
+    ];
+    for (const [terminatedBy, expected] of cases) {
+      const view: InvestigationView = {
+        ...base,
+        working_groups: {
+          t_001: { ...wg, terminated_by: terminatedBy },
+        },
+      };
+      const { nodes } = pipelineLayout(view);
+      const wgNode = nodes.find((n) => n.id === 'wg:t_001')!;
+      expect((wgNode.data as { status: string }).status).toBe(expected);
+    }
+  });
+
+  it('derives WG status from terminated_by: null with no work is not_run, with work is partial', () => {
+    const base = loadFixture('ready-v5');
+    const wg = base.working_groups['t_001']!;
+
+    const emptyView: InvestigationView = {
+      ...base,
+      working_groups: {
+        t_001: {
+          ...wg,
+          terminated_by: null,
+          moves: [],
+          aligned_questions: [],
+        },
+      },
+    };
+    const emptyNode = pipelineLayout(emptyView).nodes.find((n) => n.id === 'wg:t_001')!;
+    expect((emptyNode.data as { status: string }).status).toBe('not_run');
+
+    const partialView: InvestigationView = {
+      ...base,
+      working_groups: {
+        t_001: { ...wg, terminated_by: null },
+      },
+    };
+    const partialNode = pipelineLayout(partialView).nodes.find((n) => n.id === 'wg:t_001')!;
+    // Fixture WG has moves and/or aligned_questions, so this should be 'partial'.
+    expect((partialNode.data as { status: string }).status).toBe('partial');
+  });
+
   it('stacks vertically-co-located WGs with at least the wgBox height between them', () => {
     // 3 working groups: bin-packing puts ceil(sqrt(3))=2 columns, so two of
     // them necessarily share a column. Locate that pair and assert they don't
