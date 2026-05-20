@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { Anchor, Badge, Group, Skeleton, Stack, Text } from '@mantine/core';
+import { Anchor, Badge, Group, Paper, Skeleton, Stack, Text } from '@mantine/core';
 import type { InvestigationView, Move, WorkingGroupView } from '../../inspect/types';
 import { isAlignmentMove } from '../utils/moveStage';
 import type { ProgressOverlay } from '../hooks/useLiveProgress';
@@ -371,17 +371,19 @@ export function renderLeaf(
             <Stack gap="xs">
               <Text fw={700} size="md">Most relevant references</Text>
               {s.key_references.map((ref, i) => (
-                <Stack key={i} gap={2} p="sm" style={{ background: 'var(--mantine-color-dark-6)', borderRadius: 4 }}>
-                  <Anchor href={safeUrl(ref.url)} target="_blank" rel="noopener noreferrer" size="sm" fw={600}>
-                    {i + 1}. {ref.title}
-                  </Anchor>
-                  <Text size="sm">{ref.summary}</Text>
-                  <Stack gap={2} mt={4}>
-                    {ref.key_observations.map((obs, j) => (
-                      <Text key={j} size="xs" c="dimmed">· {obs}</Text>
-                    ))}
+                <Paper key={i} p="sm" radius="sm" withBorder>
+                  <Stack gap={2}>
+                    <Anchor href={safeUrl(ref.url)} target="_blank" rel="noopener noreferrer" size="sm" fw={600}>
+                      {i + 1}. {ref.title}
+                    </Anchor>
+                    <Text size="sm">{ref.summary}</Text>
+                    <Stack gap={2} mt={4}>
+                      {ref.key_observations.map((obs, j) => (
+                        <Text key={j} size="xs" c="dimmed">· {obs}</Text>
+                      ))}
+                    </Stack>
                   </Stack>
-                </Stack>
+                </Paper>
               ))}
             </Stack>
           )}
