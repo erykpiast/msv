@@ -1,6 +1,6 @@
 # Synthesis: Structured Report Format
 
-**Status:** Draft
+**Status:** Implemented (commit fbdce38)
 **Author:** Eryk Napierała · 2026-05-19
 **Related:**
 - [`specs/architecture.md`](architecture.md) — pipeline overview; the synthesizer sits at stage 7.
