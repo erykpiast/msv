@@ -95,6 +95,11 @@ const TOOL_INPUTS = {
     confidence: 5,
     evidence_basis: 'Mock evidence.',
   },
+  // emit_synthesis must satisfy the production schema in src/agents/synthesizer.js:
+  // `sections` is required (minItems: 2), and the synthesizer maps each optional
+  // structured field (tension_points, key_references, next_pass_proposals) with
+  // a `|| null` fallback. Populating them here means the integration tests would
+  // catch a regression that drops any of these fields from the prompt or schema.
   emit_synthesis: {
     report: 'Mock synthesis report. '.repeat(12),
     headline_findings: [
@@ -105,6 +110,47 @@ const TOOL_INPUTS = {
     open_tensions: ['Mock tension.'],
     question_landscape: [],
     dead_end_summary: null,
+    sections: [
+      {
+        area_title: 'Mock Area One',
+        area_summary: 'Broad framing of the first thematic area for the mock run.',
+        key_findings: [
+          { content: 'Mock key finding 1A with [source](https://example.com/a).', confidence: 'high' },
+          { content: 'Mock key finding 1B.', confidence: 'medium' },
+        ],
+      },
+      {
+        area_title: 'Mock Area Two',
+        area_summary: 'Broad framing of the second thematic area for the mock run.',
+        key_findings: [
+          { content: 'Mock key finding 2A.', confidence: 'low' },
+        ],
+      },
+    ],
+    tension_points: [
+      {
+        title: 'Mock tension point',
+        description: 'A short description of the disagreement.',
+        sides: [
+          { label: 'side-a', position: 'Position A in one sentence.' },
+          { label: 'side-b', position: 'Position B in one sentence.' },
+        ],
+        resolution: null,
+      },
+    ],
+    key_references: [
+      {
+        url: 'https://example.com/a',
+        title: 'Mock Reference A',
+        summary: 'A one-sentence summary of reference A.',
+        key_observations: ['Observation A1.'],
+      },
+    ],
+    next_pass_proposals: [
+      { topic: 'Mock next-pass topic 1', rationale: 'Why this matters next.' },
+      { topic: 'Mock next-pass topic 2', rationale: 'Another rationale.' },
+      { topic: 'Mock next-pass topic 3', rationale: 'Third rationale.' },
+    ],
   },
   emit_contradiction_judgement: {
     contradicts: false,

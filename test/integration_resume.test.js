@@ -131,6 +131,13 @@ test('runPipeline skips stages 1–6 when resuming at stage 7 (synthesis)', asyn
   assert.equal(final.investigation.last_failure, null);
   assert.ok(final.investigation.synthesis, 'synthesis must be populated');
   assert.ok(final.investigation.synthesis.report, 'synthesis.report must be present');
+  // `sections` is required by the synthesizer schema (minItems: 2). Asserting
+  // here catches a regression that removes it from the prompt or mock without
+  // having to deserialize the full structured payload.
+  assert.ok(Array.isArray(final.investigation.synthesis.sections),
+    'synthesis.sections must be an array');
+  assert.ok(final.investigation.synthesis.sections.length >= 2,
+    `synthesis.sections must have at least 2 entries; got ${final.investigation.synthesis.sections.length}`);
 
   // Only synthesis should have called the API. A per-tool breakdown surfaces
   // any unexpected stage call by tool name — far more diagnostic than a count.
@@ -220,6 +227,13 @@ test('idea with investigating status resumes and reaches ready', async () => {
   assert.equal(final.investigation.last_failure, null,
     'last_failure must be cleared on successful completion');
   assert.ok(final.investigation.synthesis);
+  // The resumed run must produce the full structured report, including the
+  // schema-required `sections` array. Guards against a regression that drops
+  // the field after a resume.
+  assert.ok(Array.isArray(final.investigation.synthesis.sections),
+    'synthesis.sections must be an array');
+  assert.ok(final.investigation.synthesis.sections.length >= 2,
+    `synthesis.sections must have at least 2 entries; got ${final.investigation.synthesis.sections.length}`);
 });
 
 // ---------------------------------------------------------------------------
