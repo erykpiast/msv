@@ -85,7 +85,7 @@ Six sub-stages, fanned out across pairs. Every event carries a `territory_id` co
 
 | Event | Payload (core) | When emitted |
 |---|---|---|
-| `synthesizer.done` | `{ headline_count, tension_count, has_question_landscape, has_dead_end_summary }` | After tool emit parses |
+| `synthesizer.done` | `{ headline_count, tension_count, has_question_landscape, has_dead_end_summary, section_count }` | After tool emit parses |
 
 ## API queue (cross-cutting)
 
