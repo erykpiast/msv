@@ -58,7 +58,8 @@ Six sub-stages, fanned out across pairs. Every event carries a `territory_id` co
 | `wg.debate.start` | `{ territory_id }` | Top of 5.4f |
 | `wg.debate.done` | `{ territory_id, move_count, claim_count, terminated_by }` | End of 5.4f |
 | `wg.move` | `{ territory_id, phase, move_id, persona_id, type, confidence? }` | Each accepted move in either sub-stage |
-| `wg.nicknames.done` | `{ territory_id, count }` | Cosmetic post-processing after `wg.end`: after the per-WG nicknamer attaches kebab-case display labels to every move + observation. Not a pipeline sub-stage — dashboards should not surface a substage indicator for it. Absent if the nicknamer produced nothing (empty batch or LLM failure). |
+| `wg.nicknames.done` | `{ territory_id, sub_stage, count }` | Cosmetic post-processing after `wg.end`: after the per-WG nicknamer attaches kebab-case display labels to every move + observation. `sub_stage` identifies which batch was named (e.g. `alignment`, `debate`). Not a pipeline sub-stage — dashboards should not surface a substage indicator for it. Absent if the nicknamer produced nothing (empty batch or LLM failure). |
+| `wg.nicknames.failed` | `{ territory_id, sub_stage, attempted, reason, detail }` | LLM failure path inside `attachNicknames`: emitted when the nicknamer returns zero labels for the batch. `attempted` is the count of items submitted; `reason`/`detail` come from the underlying `generateNicknames` error info. |
 | `wg.end` | `{ territory_id, candidate_count, aligned_count, report_count, observation_count, claim_count, terminated_by }` | Emitted before the cosmetic nicknamer awaits, so the dashboard advances the WG card off the critical path |
 | `wg.failed` | `{ territory_id, reason }` | When `runWorkingGroupsConcurrently` sees a `Promise.allSettled` rejection |
 
@@ -77,6 +78,7 @@ Six sub-stages, fanned out across pairs. Every event carries a `territory_id` co
 |---|---|---|
 | `forum.contradiction.judged` | `{ a_node, b_node, contradicts }` | Each contradiction LLM call resolves |
 | `forum.nicknames.done` | `{ count }` | Cosmetic post-processing inside `aggregateForum`: after the forum nicknamer attaches kebab-case display labels to every node. No `territory_id` (cross-territory batch). Absent if the nicknamer produced nothing. |
+| `forum.nicknames.failed` | `{ attempted, reason, detail }` | LLM failure path inside `attachForumNicknames`: emitted when the nicknamer returns zero labels for the cross-territory batch. `attempted` is the count of nodes submitted; `reason`/`detail` come from the underlying `generateNicknames` error info. |
 | `forum.done` | `{ node_count, contradiction_count, dead_end_count }` | End of stage |
 
 ## Synthesizer (stage 7)
@@ -123,3 +125,15 @@ Total ~500–800 events per run. `events.jsonl` typically stays under 200KB per 
 5. Add a row to the appropriate table in this file.
 
 The `debug` TUI and the event recorder need no changes — both are payload-agnostic.
+
+## Appendix: SSE wire protocol (`/events/stream`)
+
+The bus vocabulary above is also exposed over Server-Sent Events for the live `msv inspect` dashboard. The endpoint is implemented in `src/inspect/live/eventBroker.js` and registered as a Vite middleware in `src/inspect/server.js`.
+
+- **Endpoint**: `GET /events/stream` (other methods return `405`).
+- **Content-Type**: `text/event-stream` (with `Cache-Control: no-store`, `Connection: keep-alive`).
+- **Named SSE event types**:
+  - `event` — `data` is a single bus envelope JSON (the same object documented above, including the `ts`/`idea_id`/`name` envelope fields). Fires on every accepted event whose `idea_id` matches the broker's idea.
+  - `view` — `data` is the full `InvestigationView` JSON. Fires on every rebuild.
+- **On connect**: the broker replays its ring buffer of cached envelopes (up to 10,000) as `event` frames in batches of 100 via `setImmediate`, then sends the last cached `view` frame (if any). New live events are interleaved as they arrive.
+- **Backpressure / limits**: at most 20 concurrent subscribers. Requests beyond the limit receive `503` and the connection is closed immediately. Writes that throw cause the subscriber to be dropped silently.
