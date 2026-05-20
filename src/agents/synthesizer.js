@@ -10,7 +10,10 @@ const EMIT_SYNTHESIS_TOOL = {
     'Emit the structured report: sections with findings, tension points, key references, and next-pass proposals.',
   input_schema: {
     type: 'object',
-    required: ['headline_findings', 'open_tensions', 'report', 'sections'],
+    // Property order matters: tool-call JSON is generated top-to-bottom, so if the
+    // model runs long the most expendable field (the prose `report`) is the one
+    // that gets truncated, not the structured payload.
+    required: ['headline_findings', 'sections', 'open_tensions', 'report'],
     additionalProperties: false,
     properties: {
       headline_findings: {
@@ -18,42 +21,6 @@ const EMIT_SYNTHESIS_TOOL = {
         minItems: 3,
         maxItems: 5,
         items: { type: 'string', minLength: 1 },
-      },
-      open_tensions: {
-        type: 'array',
-        maxItems: 3,
-        items: { type: 'string', minLength: 1 },
-      },
-      report: {
-        type: 'string',
-        minLength: 200,
-        description: 'Opinionated prose, ~800–1500 words.',
-      },
-      question_landscape: {
-        type: 'array',
-        description: 'Per-territory question landscape.',
-        items: {
-          type: 'object',
-          properties: {
-            territory_name: { type: 'string' },
-            territory_id: { type: 'string' },
-            questions: {
-              type: 'array',
-              items: {
-                type: 'object',
-                properties: {
-                  question: { type: 'string' },
-                  origin: { type: 'string' },
-                  provenance_note: { type: 'string' },
-                },
-              },
-            },
-          },
-        },
-      },
-      dead_end_summary: {
-        type: 'string',
-        description: '1–3 sentences about what was pursued and not found.',
       },
       sections: {
         type: 'array',
@@ -148,6 +115,47 @@ const EMIT_SYNTHESIS_TOOL = {
             territory_hint: { type: 'string', description: 'Which territory this relates to, if applicable.' },
           },
         },
+      },
+      question_landscape: {
+        type: 'array',
+        description: 'Per-territory question landscape.',
+        items: {
+          type: 'object',
+          properties: {
+            territory_name: { type: 'string' },
+            territory_id: { type: 'string' },
+            questions: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  question: { type: 'string' },
+                  origin: { type: 'string' },
+                  provenance_note: { type: 'string' },
+                },
+              },
+            },
+          },
+        },
+      },
+      dead_end_summary: {
+        type: 'string',
+        description: '1–3 sentences about what was pursued and not found.',
+      },
+      open_tensions: {
+        type: 'array',
+        maxItems: 3,
+        items: { type: 'string', minLength: 1 },
+      },
+      // `report` is intentionally last in the schema so it absorbs any truncation
+      // if the tool call hits max_tokens. The structured fields above are the
+      // primary deliverable; the prose summarises them, it does not duplicate them.
+      report: {
+        type: 'string',
+        minLength: 100,
+        maxLength: 3500,
+        description:
+          'Concise opinionated prose, max ~400 words. Lead with the gist. Do not re-enumerate sections, tension_points, or key_references — the structured fields above carry that detail. Use this field for a tight overall stance and the connective tissue between sections.',
       },
     },
   },
@@ -251,7 +259,11 @@ async function runSynthesizer({ client, idea, model, budget, forum, personas, pa
     model,
     budget,
     system: SYNTHESIZER,
-    maxTokens: 6500,
+    // 10000 is a safety net, not a budget. With the structured fields emitted
+    // first and the prose `report` capped at ~400 words / 3500 chars, a typical
+    // synthesis lands well under this. We previously ran at 6500 and saw
+    // stop_reason: 'max_tokens' truncate the structured payload silently.
+    maxTokens: 10_000,
     messages: [
       {
         role: 'user',

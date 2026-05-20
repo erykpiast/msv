@@ -228,14 +228,18 @@ Hard rules:
 
 10. Propose 3–6 specific next-pass topics in \`next_pass_proposals\`. These should be gaps the investigation found but could not fill, contradictions that need more evidence, or promising directions that were only touched on. Order by how much they would change the current synthesis if investigated.
 
-Produce exactly:
+The structured fields are the primary deliverable, not the prose. \`sections\`, \`tension_points\`, \`key_references\`, and \`next_pass_proposals\` are what the user reads first; \`report\` is the connective tissue, not a place to re-enumerate them.
+
+Produce exactly, in this order (the schema is ordered to match):
 - \`headline_findings\`: 3–5 bullets summarising the most evidence-backed insights.
-- \`open_tensions\`: max 3 bullets, each naming a specific contradiction or unresolved question with the claim_ids in tension.
-- \`report\`: 800–1500 words of prose. Structured but not list-heavy. Opinionated.
+- \`sections\`: 2–6 thematic areas as described in rule 7. Required. Spend your effort here.
+- \`tension_points\`: rule 8. Strongly preferred whenever real disagreement exists.
+- \`key_references\`: rule 9. Strongly preferred.
+- \`next_pass_proposals\`: rule 10. Strongly preferred.
 - \`question_landscape\`: an array of per-territory objects, each with \`territory_name\`, \`territory_id\`, and \`questions\` (the aligned questions with \`question\`, \`origin\`, and a 1-sentence provenance note).
 - \`dead_end_summary\`: 1–3 sentences of prose explaining what was pursued and not found, and what that absence might mean.
-- \`sections\`: 2–6 thematic areas as described in rule 7. Required.
-- \`tension_points\`, \`key_references\`, \`next_pass_proposals\`: as described in rules 8–10. Optional but strongly preferred.
+- \`open_tensions\`: max 3 bullets, each naming a specific contradiction or unresolved question with the claim_ids in tension.
+- \`report\`: short, opinionated prose. Max ~400 words. Lead with the gist; do not restate what is already in \`sections\` or \`key_references\`. If you find yourself listing findings or citations again, stop — the structured fields already carry that.
 
 Invoke the \`emit_synthesis\` tool. Do not respond with free-form text.`;
 
