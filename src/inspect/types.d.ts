@@ -21,7 +21,19 @@ export type SubQ = {
 // --- v5 types ---
 
 export type Territory = {
+  /**
+   * Canonical territory identifier (slugged, e.g. `t_001`). Emitted by the
+   * coordinator and used as the key in `InvestigationView.working_groups` and
+   * for routing in the SPA. Prefer this field for lookups.
+   */
   id: string;
+  /**
+   * Duplicate of `id` preserved for back-compat with code paths that read
+   * raw coordinator output (and with the slug persisted on each pair_debates
+   * entry by `working_group.js`). Always equals `id` in practice. Resolvers
+   * fall back to this when `id` is missing — see `territoryKey()` in
+   * `src/working_group.js` and `src/inspect/view/build.js`.
+   */
   territory_id: string;
   name: string;
   description: string;
