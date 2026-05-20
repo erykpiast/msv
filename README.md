@@ -97,7 +97,8 @@ What you see in the canvas, by stage:
   Researcher, Observations, Debate) per territory.
 - Cross-Pollination: reactions to surviving claims.
 - Forum: surviving-claims graph with contradiction edges, dead-end list (v5).
-- Synthesis: headline findings, question landscape (v5), dead-end summary
+- Synthesis: headline findings, structured sections, tension points, key
+  references, next-pass proposals, question landscape (v5), dead-end summary
   (v5), full Markdown report.
 
 The inspector detects `schema_version`. v4 ideas render a one-line empty state;
