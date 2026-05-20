@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Center, Loader } from '@mantine/core';
 import { ViewProvider } from './ViewContext';
 import { useInitialView } from './hooks/useView';
@@ -20,11 +20,22 @@ function Body() {
     if (initial && !view) setView(initial);
   }, [initial, view]);
 
+  // Stable handler identities (M14). `useEventSource` reads handlers through
+  // a ref so it tolerates fresh literals today, but stable callbacks make
+  // the contract explicit and avoid relying on the hook's internal shape.
+  const handleView = useCallback((v: unknown) => setView(v as InvestigationView), []);
+  const handleEvent = useCallback(
+    (e: unknown) => setProgress((p) => reduceProgress(p, e as BusEnvelope)),
+    [],
+  );
+  const handleOpen = useCallback(() => setSseStatus('live'), []);
+  const handleError = useCallback(() => setSseStatus('error'), []);
+
   useEventSource('/events/stream', {
-    onView: (v) => setView(v as InvestigationView),
-    onEvent: (e) => setProgress((p) => reduceProgress(p, e as BusEnvelope)),
-    onOpen: () => setSseStatus('live'),
-    onError: () => setSseStatus('error'),
+    onView: handleView,
+    onEvent: handleEvent,
+    onOpen: handleOpen,
+    onError: handleError,
   });
 
   if (!view) return <Center mih="100vh"><Loader /></Center>;

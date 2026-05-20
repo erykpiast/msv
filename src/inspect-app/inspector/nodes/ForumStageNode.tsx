@@ -3,7 +3,7 @@ import { Badge, Group } from '@mantine/core';
 import { type Node, type NodeProps } from '@xyflow/react';
 import { StageNodeShell } from './StageNodeShell';
 import { useSetRoute } from '../../hooks/useHashRoute';
-import { useProgressOverlay } from '../../ViewContext';
+import { useIsStageInProgress } from '../../ViewContext';
 import type { InvestigationView, StageStatus } from '../../../inspect/types';
 
 type ForumStageNodeData = { view: InvestigationView; status: StageStatus };
@@ -12,8 +12,7 @@ type ForumStageNodeType = Node<ForumStageNodeData, 'forumStage'>;
 export const ForumStageNode = memo(function ForumStageNode({ data }: NodeProps<ForumStageNodeType>) {
   const { view, status } = data;
   const setRoute = useSetRoute();
-  const overlay = useProgressOverlay();
-  const isLive = overlay.inProgressStages.has('forum');
+  const isLive = useIsStageInProgress('forum');
   const nodes = view.forum.nodes.length;
   const contras = view.forum.contradiction_edges.length;
   const openQs = view.forum.nodes.filter((n) => n.has_open_question).length;
