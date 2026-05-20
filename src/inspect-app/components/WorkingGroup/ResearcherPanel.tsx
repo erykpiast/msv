@@ -1,6 +1,7 @@
 import { Stack, Text, Badge, Group, Accordion, List, Anchor } from '@mantine/core';
 import type { WorkingGroupView } from '../../../inspect/types';
 import { Card } from '../../primitives/Card';
+import { safeUrl } from '../../utils/format';
 
 const OUTCOME_COLOR = {
   useful: 'green',
@@ -71,7 +72,7 @@ export function ResearcherPanel({ wg }: { wg: WorkingGroupView }) {
                                   <Badge size="xs" variant="light" color="gray">{f.quality}</Badge>
                                 ) : null}
                                 {f.source_url ? (
-                                  <Anchor href={f.source_url} size="xs" target="_blank" rel="noopener noreferrer">
+                                  <Anchor href={safeUrl(f.source_url)} size="xs" target="_blank" rel="noopener noreferrer">
                                     {f.source_title ?? f.source_url}
                                   </Anchor>
                                 ) : null}

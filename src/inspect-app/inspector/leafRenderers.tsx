@@ -17,6 +17,7 @@ import { ObservationPanel } from '../components/WorkingGroup/ObservationPanel';
 import { DebatePanel } from '../components/WorkingGroup/DebatePanel';
 import { ConclusionsPanel } from '../components/WorkingGroup/ConclusionsPanel';
 import { WgMapPanel } from '../components/WorkingGroup/WgMapPanel';
+import { safeUrl } from '../utils/format';
 
 type Rendered = { title: string; body: ReactNode; raw?: string };
 
@@ -371,7 +372,7 @@ export function renderLeaf(
               <Text fw={700} size="md">Most relevant references</Text>
               {s.key_references.map((ref, i) => (
                 <Stack key={i} gap={2} p="sm" style={{ background: 'var(--mantine-color-dark-6)', borderRadius: 4 }}>
-                  <Anchor href={ref.url} target="_blank" rel="noopener noreferrer" size="sm" fw={600}>
+                  <Anchor href={safeUrl(ref.url)} target="_blank" rel="noopener noreferrer" size="sm" fw={600}>
                     {i + 1}. {ref.title}
                   </Anchor>
                   <Text size="sm">{ref.summary}</Text>
