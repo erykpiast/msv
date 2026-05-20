@@ -1,5 +1,6 @@
 # Task Breakdown: Pipeline Inspector Graph
 
+**Status:** Implemented (commit dc624aa)
 **Generated:** 2026-05-17
 **Source:** [`specs/feat-pipeline-inspector-graph.md`](feat-pipeline-inspector-graph.md)
 **Tracker:** STM (Simple Task Manager)

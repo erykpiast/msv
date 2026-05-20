@@ -1,6 +1,6 @@
 # `msv inspect` — Pipeline Inspector Graph
 
-**Status:** Draft
+**Status:** Implemented (commit dc624aa)
 **Author:** Eryk Napierała · 2026-05-17
 **Related:** [`specs/feat-research-process-visualisation.md`](feat-research-process-visualisation.md) (the spec this one supersedes for the SPA layout, on top of the loader/view-builder it kept). [`specs/question-machine.md`](question-machine.md) (v5 pipeline stages). [`specs/feat-investigation-resumption.md`](feat-investigation-resumption.md) (partial-investigation rendering ties in).
 

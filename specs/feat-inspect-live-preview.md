@@ -1,6 +1,6 @@
 # `msv inspect` — Live Preview from a Running Pipeline
 
-**Status:** Draft
+**Status:** Implemented (commit 14810b4)
 **Author:** Eryk Napierała · 2026-05-18
 **Related:**
 - [`specs/feat-tui-event-decoupling.md`](feat-tui-event-decoupling.md) — defines the event bus, recorder, and TUI module shape this spec extends.
