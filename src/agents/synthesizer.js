@@ -70,7 +70,7 @@ const EMIT_SYNTHESIS_TOOL = {
                 required: ['label', 'position'],
                 additionalProperties: false,
                 properties: {
-                  label: { type: 'string', description: 'Persona name, working group id, or short descriptor.' },
+                  label: { type: 'string', description: 'Persona display name (the human-readable name, not an id slug) or a short natural-language descriptor of the side. Never use internal identifiers like p_008 or role slugs like "skeptic".' },
                   position: { type: 'string', description: 'Their position in one sentence.' },
                 },
               },
@@ -208,10 +208,13 @@ function renderFindings(pairDebates) {
       for (const f of (rr.findings || [])) {
         if (!f.source_url || seen.has(f.source_url)) continue;
         seen.add(f.source_url);
+        // source_title is required by RESEARCHER_REPORT_JSON_SCHEMA (post-fix);
+        // older runs without it fall back to the URL so the synth still has
+        // something to render.
         refs.push({
           url: f.source_url,
           title: (f.source_title || f.source_url).slice(0, 120),
-          content: (f.content || '').slice(0, 200),
+          content: (f.summary || f.content || '').slice(0, 200),
           quality: f.quality || 'secondary',
         });
       }

@@ -14,6 +14,13 @@ const {
 const { RESEARCHER_TOOL_BUDGET, RESEARCHER_TURN_BUDGET, RESEARCHER_REPORT_JSON_SCHEMA } = require('../moves');
 const { RESEARCHER } = require('./prompts');
 const { appendLog, safeSlug } = require('../storage');
+const { validateFindingGrounding } = require('../grounding');
+
+// Concurrency for the out-of-band grounding refetch. Findings per report are
+// typically 2–6; this pool keeps total wall-clock bounded while staying polite
+// to publishers (no single host gets hit harder than necessary because we
+// don't dedupe by host — different hosts dominate in practice).
+const GROUNDING_CONCURRENCY = 4;
 
 const EMIT_RESEARCHER_REPORT_TOOL = {
   name: 'emit_researcher_report',
@@ -44,6 +51,144 @@ function coerceArray(value) {
     }
   }
   return null;
+}
+
+async function runWithConcurrency(items, limit, worker) {
+  const out = new Array(items.length);
+  let next = 0;
+  async function pump() {
+    while (true) {
+      const i = next++;
+      if (i >= items.length) return;
+      out[i] = await worker(items[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, pump));
+  return out;
+}
+
+/**
+ * Out-of-band grounding pass: refetch each finding's URL and verify it is
+ * reachable AND the model-supplied source_quote is plausibly present on the
+ * page. Findings that fail the hard checks are dropped and logged; warnings
+ * (title mismatch, quote-partial) are logged but the finding survives.
+ *
+ * Side effect: every fetched URL is persisted under ~/.msv/ideas/<id>/sources/
+ * by validateFindingGrounding, so the artifact can be inspected later without
+ * needing network access.
+ *
+ * Downgrades outcome:
+ *   - 'useful' → 'partial' if any finding was dropped
+ *   - any     → 'dead_end' if ALL findings were dropped (or none survived)
+ */
+async function applyGroundingFilter({
+  normalized,
+  ideaId,
+  logFile,
+  alignedId,
+  territoryId,
+  bus,
+}) {
+  const findings = normalized.findings || [];
+  if (findings.length === 0) {
+    return { ...normalized, grounding: { checked: 0, kept: 0, dropped: 0 } };
+  }
+
+  const results = await runWithConcurrency(findings, GROUNDING_CONCURRENCY, async (f) => {
+    try {
+      const res = await validateFindingGrounding({
+        ideaId,
+        url: f.source_url,
+        sourceQuote: f.source_quote,
+        sourceTitle: f.source_title,
+        // Researcher just produced these; we want the live page, not whatever
+        // an earlier run cached.
+        useCache: false,
+      });
+      return { finding: f, res };
+    } catch (err) {
+      return {
+        finding: f,
+        res: {
+          ok: false,
+          errors: [`grounding-error: ${err.message || String(err)}`],
+          warnings: [],
+          meta: {},
+        },
+      };
+    }
+  });
+
+  const kept = [];
+  for (const { finding, res } of results) {
+    if (res.ok) {
+      kept.push(finding);
+      if (res.warnings.length > 0) {
+        await appendLog(ideaId, logFile, {
+          kind: 'grounding_warn',
+          payload: {
+            aligned_id: alignedId,
+            source_url: finding.source_url,
+            warnings: res.warnings,
+            meta: res.meta,
+          },
+        });
+      }
+    } else {
+      await appendLog(ideaId, logFile, {
+        kind: 'grounding_drop',
+        payload: {
+          aligned_id: alignedId,
+          source_url: finding.source_url,
+          source_title: finding.source_title || null,
+          errors: res.errors,
+          warnings: res.warnings,
+          meta: res.meta,
+        },
+      });
+      if (bus) bus.emit('wg.researcher.grounding_drop', {
+        territory_id: territoryId,
+        aligned_id: alignedId,
+        url: finding.source_url,
+        reason: res.errors[0] || 'unknown',
+      });
+    }
+  }
+
+  let outcome = normalized.outcome;
+  if (kept.length === 0) outcome = 'dead_end';
+  else if (kept.length < findings.length && outcome === 'useful') outcome = 'partial';
+
+  await appendLog(ideaId, logFile, {
+    kind: 'grounding_summary',
+    payload: {
+      aligned_id: alignedId,
+      checked: findings.length,
+      kept: kept.length,
+      dropped: findings.length - kept.length,
+      outcome_before: normalized.outcome,
+      outcome_after: outcome,
+    },
+  });
+
+  if (bus) bus.emit('wg.researcher.grounding_summary', {
+    territory_id: territoryId,
+    aligned_id: alignedId,
+    checked: findings.length,
+    kept: kept.length,
+    dropped: findings.length - kept.length,
+  });
+
+  return {
+    outcome,
+    findings: kept,
+    search_trace: normalized.search_trace,
+    grounding: {
+      checked: findings.length,
+      kept: kept.length,
+      dropped: findings.length - kept.length,
+    },
+  };
 }
 
 async function normalizeReport(rawInput, { ideaId, logFile, alignedId }) {
@@ -253,13 +398,25 @@ async function runJointResearcher({
           finding_count: normalized.findings.length,
         },
       });
+      // Out-of-band grounding pass: drop findings whose URL is unreachable or
+      // whose source_quote does not appear on the refetched page. Findings
+      // that survive get their fetched body persisted under ~/.msv/ideas/<id>/sources/
+      // for debug. See src/grounding.js for the validator and cache layout.
+      const grounded = await applyGroundingFilter({
+        normalized,
+        ideaId: idea.id,
+        logFile,
+        alignedId: aqId,
+        territoryId,
+        bus,
+      });
       if (bus) bus.emit('wg.researcher.done', {
         territory_id: territoryId,
         aligned_id: aqId,
-        outcome: normalized.outcome,
-        finding_count: normalized.findings.length,
+        outcome: grounded.outcome,
+        finding_count: grounded.findings.length,
       });
-      return normalized;
+      return grounded;
     }
 
     // Append assistant turn and continue.
@@ -280,4 +437,4 @@ async function runJointResearcher({
   return { outcome: 'dead_end', findings: [], search_trace: [] };
 }
 
-module.exports = { runJointResearcher, normalizeReport, coerceArray };
+module.exports = { runJointResearcher, normalizeReport, coerceArray, applyGroundingFilter };
