@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { Anchor, Badge, Group, Paper, Skeleton, Stack, Text } from '@mantine/core';
-import type { InvestigationView, Move, WorkingGroupView } from '../../inspect/types';
+import type { InvestigationView, Move, SynthesisView, WorkingGroupView } from '../../inspect/types';
 import { isAlignmentMove } from '../utils/moveStage';
 import type { ProgressOverlay } from '../hooks/useLiveProgress';
 import type { LeafRef, WorkingGroupSubstage } from '../hooks/useHashRoute';
@@ -30,6 +30,77 @@ function findWGWhere(
 
 function formatConfidence(n: unknown): string {
   return typeof n === 'number' && Number.isFinite(n) ? n.toFixed(2) : '—';
+}
+
+function synthesisToMarkdown(s: NonNullable<SynthesisView>): string {
+  const parts: string[] = [];
+
+  if (s.sections?.length) {
+    for (const section of s.sections) {
+      parts.push(`## ${section.area_title}`);
+      if (section.area_summary) parts.push(section.area_summary);
+      if (section.key_findings.length) {
+        parts.push(
+          section.key_findings
+            .map((f) => `- _(${f.confidence})_ ${f.content}`)
+            .join('\n')
+        );
+      }
+    }
+  } else if (s.report) {
+    parts.push(s.report);
+  }
+
+  if (s.headline_findings.length && !s.sections?.length) {
+    parts.push('## Headline findings');
+    parts.push(s.headline_findings.map((f) => `- ${f}`).join('\n'));
+  }
+
+  if (s.tension_points?.length) {
+    parts.push('## Tension points');
+    for (const tp of s.tension_points) {
+      parts.push(`### ${tp.title}`);
+      parts.push(tp.description);
+      if (tp.sides.length) {
+        parts.push(tp.sides.map((side) => `- **${side.label}:** ${side.position}`).join('\n'));
+      }
+      if (tp.resolution) parts.push(`_Resolved:_ ${tp.resolution}`);
+    }
+  }
+
+  if (s.key_references?.length) {
+    parts.push('## Most relevant references');
+    s.key_references.forEach((ref, i) => {
+      parts.push(`### ${i + 1}. [${ref.title}](${ref.url})`);
+      if (ref.summary) parts.push(ref.summary);
+      if (ref.key_observations.length) {
+        parts.push(ref.key_observations.map((obs) => `- ${obs}`).join('\n'));
+      }
+    });
+  }
+
+  if (s.next_pass_proposals?.length) {
+    parts.push('## Dig deeper — next pass proposals');
+    s.next_pass_proposals.forEach((p, i) => {
+      parts.push(`${i + 1}. **${p.topic}** — ${p.rationale}`);
+    });
+  }
+
+  if (s.question_landscape?.length && !s.sections?.length) {
+    parts.push('## Question landscape');
+    parts.push(
+      s.question_landscape
+        .map((q) => `- ${q.territory_name}: ${q.questions.length} questions`)
+        .join('\n')
+    );
+  }
+
+  if (s.dead_end_summary) {
+    parts.push('## Dead ends');
+    parts.push(s.dead_end_summary);
+  }
+
+  return parts.join('\n\n');
 }
 
 // overlay is omitted in static (post-mortem) mode. Only the 'move' and
@@ -440,7 +511,7 @@ export function renderLeaf(
         </Stack>
       );
 
-      return { title: 'Synthesis', body, raw: s.report };
+      return { title: 'Synthesis', body, raw: synthesisToMarkdown(s) };
     }
     case 'wgPanel': {
       const territoryId = context?.territoryId;

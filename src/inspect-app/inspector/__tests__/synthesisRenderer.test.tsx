@@ -126,6 +126,19 @@ describe('synthesis leaf renderer — structured path', () => {
     renderBody(result!.body as ReactElement);
     expect(screen.queryByText('Headline findings')).toBeNull();
   });
+
+  it('serializes structured fields to markdown in raw', () => {
+    const result = renderLeaf({ kind: 'synthesis' }, viewWithSynthesis(structuredSynthesis));
+    expect(result!.raw).toContain('## Market Dynamics');
+    expect(result!.raw).toContain('- _(high)_ High adoption rate observed');
+    expect(result!.raw).toContain('## Tension points');
+    expect(result!.raw).toContain('### Adoption vs. Cost');
+    expect(result!.raw).toContain('- **Optimist:**');
+    expect(result!.raw).toContain('## Most relevant references');
+    expect(result!.raw).toContain('[Source 2024](https://example.com/study)');
+    expect(result!.raw).toContain('## Dig deeper — next pass proposals');
+    expect(result!.raw).toContain('**Infrastructure scaling costs**');
+  });
 });
 
 describe('synthesis leaf renderer — legacy fallback', () => {
@@ -153,5 +166,13 @@ describe('synthesis leaf renderer — legacy fallback', () => {
   it('returns null when synthesis is null', () => {
     const result = renderLeaf({ kind: 'synthesis' }, viewWithSynthesis(null));
     expect(result).toBeNull();
+  });
+
+  it('falls back to s.report in raw when sections is absent', () => {
+    const result = renderLeaf({ kind: 'synthesis' }, viewWithSynthesis(legacySynthesis));
+    expect(result!.raw).toContain('Legacy flat prose report.');
+    expect(result!.raw).toContain('## Headline findings');
+    expect(result!.raw).toContain('- Finding 1');
+    expect(result!.raw).toContain('## Dead ends');
   });
 });
