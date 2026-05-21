@@ -4,7 +4,7 @@ import { edgeColors, tokens } from '../../theme/tokens';
 import type { WorkingGroupSubstage } from '../../hooks/useHashRoute';
 
 const STAGES: WorkingGroupSubstage[] = [
-  'ideation', 'adversarial', 'alignment', 'researcher', 'observation', 'debate',
+  'ideation', 'adversarial', 'alignment', 'researcher', 'observation', 'debate', 'wg-map',
 ];
 
 export function workingGroupLayout(wg: WorkingGroupView, territoryId: string): {
@@ -37,5 +37,6 @@ function substageStatus(wg: WorkingGroupView, key: WorkingGroupSubstage): StageS
     case 'researcher':   return wg.researcher_reports?.length ? 'done' : 'not_run';
     case 'observation':  return wg.observations?.length ? 'done' : 'not_run';
     case 'debate':       return wg.moves?.length ? 'done' : 'not_run';
+    case 'wg-map':       return wg.aligned_questions?.length ? 'done' : 'not_run';
   }
 }

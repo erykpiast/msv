@@ -13,6 +13,7 @@ import { AlignmentPanel } from '../components/WorkingGroup/AlignmentPanel';
 import { ResearcherPanel } from '../components/WorkingGroup/ResearcherPanel';
 import { ObservationPanel } from '../components/WorkingGroup/ObservationPanel';
 import { DebatePanel } from '../components/WorkingGroup/DebatePanel';
+import { WgMapPanel } from '../components/WorkingGroup/WgMapPanel';
 
 type Rendered = { title: string; body: ReactNode; raw?: string };
 
@@ -296,6 +297,9 @@ export function renderLeaf(
           break;
         case 'debate':
           body = <DebatePanel wg={wg} personaName={personaName} survivingIds={survivingIds} />;
+          break;
+        case 'wg-map':
+          body = <WgMapPanel wg={wg} />;
           break;
         default:
           body = null;

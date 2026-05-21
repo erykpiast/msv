@@ -22,6 +22,7 @@ const LABEL: Record<WorkingGroupSubstage, string> = {
   researcher: 'Researcher',
   observation: 'Observations',
   debate: 'Debate',
+  'wg-map': 'Research Map',
 };
 
 const SUMMARY: Record<WorkingGroupSubstage, (wg: WorkingGroupView) => string> = {
@@ -31,6 +32,10 @@ const SUMMARY: Record<WorkingGroupSubstage, (wg: WorkingGroupView) => string> = 
   researcher:  (w) => `${w.researcher_reports?.length ?? 0} reports`,
   observation: (w) => `${w.observations?.length ?? 0} observations`,
   debate:      (w) => `${w.moves?.length ?? 0} moves`,
+  'wg-map':    (w) => {
+    const findings = w.researcher_reports?.flatMap(r => r.findings).length ?? 0;
+    return `${findings} findings · ${w.observations?.length ?? 0} obs`;
+  },
 };
 
 export const SubStageNode = memo(function SubStageNode({ data }: NodeProps<SubStageNodeType>) {
