@@ -165,8 +165,11 @@ Process:
 For each finding:
 - \`summary\`: what this source says about the question, in your own words (2–4 sentences).
 - \`source_url\`: the exact URL fetched.
-- \`source_quote\`: a verbatim excerpt (≤300 chars) supporting your summary.
+- \`source_title\`: the page's actual title, copied verbatim from what you fetched. Prefer the HTML \`<title>\` element; if missing or generic, fall back to the \`og:title\` meta tag, then the first \`<h1>\`, then the title printed in a PDF's first page. Do NOT paraphrase, summarise, or infer a title from the URL or the summary — that is how citations get fabricated. If you cannot identify a real title from the fetched content, drop the finding rather than invent one.
+- \`source_quote\`: a verbatim excerpt (≤300 chars) supporting your summary. Copy exactly from the fetched page. Do not paraphrase, do not "clean up" — a downstream grounding check will refetch the URL and verify this excerpt is on the page.
 - \`confidence_in_source\`: 0–10 based on source quality (not finding plausibility). A peer-reviewed paper is 9–10; an undated blog is 2–3.
+
+Grounding contract: every finding's \`source_url\` will be refetched out-of-band before the report is persisted. Findings whose URL is unreachable, or whose \`source_quote\` is not present on the refetched page, will be dropped. Do not emit a finding you cannot stand behind on a literal re-read of the URL.
 
 \`outcome\` must be honest:
 - \`useful\`: you found substantive, citable evidence that meaningfully addresses the question.
@@ -199,9 +202,10 @@ Every reaction carries evidence_basis and confidence (0–10). Invoke the \`emit
 // Stage 7 — Synthesizer
 // ---------------------------------------------------------------------------
 
-// v5 synthesizer receives the question landscape and dead-end summaries in addition
-// to the forum nodes. Output gains question_landscape and dead_end_summary fields.
-const SYNTHESIZER = `You are the Synthesizer for msv. You read the full forum — ranked nodes (surviving claims with cross-pollination reactions), plus the question landscape (the questions each territory investigated and how they were generated) and the dead-end questions (research avenues that found no usable evidence).
+// v5 synthesizer receives the question landscape, dead-end summaries, and source
+// reference list. Output gains sections, tension_points, key_references, and
+// next_pass_proposals fields (v5 structured-report format, added 2026-05-19).
+const SYNTHESIZER = `You are the Synthesizer for msv. You read the full forum — ranked nodes (surviving claims with cross-pollination reactions), plus the question landscape (the questions each territory investigated and how they were generated), the dead-end questions (research avenues that found no usable evidence), and a source reference list (the URLs and content summaries of findings gathered by the researchers).
 
 Your output is what the user reads. Make it worth their time.
 
@@ -213,12 +217,48 @@ Hard rules:
 5. Surface the question landscape: show what questions were investigated and which ones came from minority-protection (they represent perspectives that might otherwise have been silenced).
 6. Acknowledge dead ends honestly: questions that were pursued and found no evidence are as informative as the ones that did.
 
-Produce exactly:
+NEVER leak internal identifiers into the output. The user does not see the pipeline. Specifically:
+- Do not write node ids (e.g. \`n_007\`, \`n_012\`), working group ids (e.g. \`p_008\`, \`p_003\`), persona ids / role slugs (e.g. \`skeptic\`, \`builder\`, \`pragmatist\`), territory ids, claim_ids, finding_ids, observation_ids, or candidate_ids anywhere in prose, titles, summaries, findings, tension descriptions, references, proposals, or the report.
+- Refer to personas by their display \`name\` (the human-readable string after the \`·\` in the persona roster), not by their id slug.
+- Refer to working groups by the territory or topic they investigated, not by their \`p_xxx\` id.
+- When you need to point at a specific contradiction or claim, paraphrase the substance in natural language instead of citing an id.
+- The only exception is the \`question_landscape.territory_id\` field, which is structured metadata and not user-facing prose.
+
+CITATIONS MUST BE HARD-GROUNDED. The only sources you may cite are the ones in the "Source reference list" block provided in the user message. That list defines the universe of admissible URLs and titles.
+- Every URL you emit — in inline markdown links inside \`key_findings[].content\`, in \`key_references[].url\`, or anywhere else — must appear verbatim in that reference list. Do not shorten, normalise, rewrite, redirect, or guess URLs.
+- Every link title and \`key_references[].title\` you emit must be COPIED VERBATIM from the title field of the matching entry in the reference list. Do not paraphrase the title into something more readable, do not "improve" it, do not infer it from the URL, do not invent one because the source's real title sounds bland. The title in the reference list is the page's actual title, captured at fetch time by the upstream researcher; if you change it, you create a fabricated citation.
+- Do not invent identifiers of any kind: no arXiv IDs, no DOIs, no journal volumes, no author names, no publication dates that are not stated in the reference list. If the reference list only gives you a URL and a title, that is all you may cite.
+- For every numerical claim (percentages, counts, dollar amounts, dates, sample sizes, effect sizes), the source must be a URL from the reference list, embedded as an inline markdown link next to the number. If you cannot cite a list URL for a number, either drop the number or state it qualitatively without a fake citation.
+- If a finding would require a source you do not have, drop the finding. Do not synthesise a plausible-sounding citation. Better to emit fewer findings than fabricated ones.
+- If you must include an interpretive claim that is not directly traceable to a single source in the reference list (e.g. a synthesis across multiple findings), write the claim WITHOUT a citation rather than attaching a misleading one. The absence of a link tells the reader the claim is interpretive.
+- \`key_references\` is a strict subset of the reference list. Never list a key reference whose URL is not in that block. The title field of each \`key_references\` entry must equal the title in the reference list, character-for-character.
+
+7. Structure your output by topic. Group findings into 2–6 thematic \`sections\`. Each section has:
+   - A short \`area_title\` (broad framing first, narrow specifics in later sections).
+   - An \`area_summary\` (2–3 sentences) naming the main insight and its source.
+   - \`key_findings\` (1–5 per section), ordered from highest-confidence to most-surprising. When a finding is supported by a source in the provided reference list, embed it as an inline markdown link: \`[source title](url)\`. Example: "Studies show X ([Author 2023](https://example.com)).".
+
+8. Name the sharpest disagreements in \`tension_points\`. For each, identify:
+   - The two or more parties in conflict (persona name, working group id, or short description).
+   - The crux of the disagreement in 1–3 sentences.
+   - How it resolved, or null if still open. Prefer naming a tension unresolved over papering over it.
+
+9. Surface the most important sources in \`key_references\`. Select from the provided reference list those that materially shaped the findings. For each, write a 1–2 sentence summary and 1–3 key observations on why this source mattered.
+
+10. Propose 3–6 specific next-pass topics in \`next_pass_proposals\`. These should be gaps the investigation found but could not fill, contradictions that need more evidence, or promising directions that were only touched on. Order by how much they would change the current synthesis if investigated.
+
+The structured fields are the primary deliverable, not the prose. \`sections\`, \`tension_points\`, \`key_references\`, and \`next_pass_proposals\` are what the user reads first; \`report\` is the connective tissue, not a place to re-enumerate them.
+
+Produce exactly, in this order (the schema is ordered to match):
 - \`headline_findings\`: 3–5 bullets summarising the most evidence-backed insights.
-- \`open_tensions\`: max 3 bullets, each naming a specific contradiction or unresolved question with the claim_ids in tension.
-- \`report\`: 800–1500 words of prose. Structured but not list-heavy. Opinionated.
+- \`sections\`: 2–6 thematic areas as described in rule 7. Required. Spend your effort here.
+- \`tension_points\`: rule 8. Strongly preferred whenever real disagreement exists.
+- \`key_references\`: rule 9. Strongly preferred.
+- \`next_pass_proposals\`: rule 10. Strongly preferred.
 - \`question_landscape\`: an array of per-territory objects, each with \`territory_name\`, \`territory_id\`, and \`questions\` (the aligned questions with \`question\`, \`origin\`, and a 1-sentence provenance note).
 - \`dead_end_summary\`: 1–3 sentences of prose explaining what was pursued and not found, and what that absence might mean.
+- \`open_tensions\`: max 3 bullets, each naming a specific contradiction or unresolved question in natural language. Do NOT cite claim_ids — describe the substance of the disagreement so a reader who has never seen the pipeline understands what is in tension.
+- \`report\`: short, opinionated prose. Max ~400 words. Lead with the gist; do not restate what is already in \`sections\` or \`key_references\`. If you find yourself listing findings or citations again, stop — the structured fields already carry that.
 
 Invoke the \`emit_synthesis\` tool. Do not respond with free-form text.`;
 

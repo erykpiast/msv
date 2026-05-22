@@ -154,10 +154,20 @@ const RESEARCHER_REPORT_JSON_SCHEMA = {
       minItems: 0,
       items: {
         type: 'object',
-        required: ['summary', 'source_url', 'source_quote', 'confidence_in_source'],
+        // source_title required so the synthesizer copies it verbatim into
+        // key_references[].title instead of inventing one from the URL.
+        // Combined with the researcher-side grounding check, this closes the
+        // path that produced fabricated titles attached to real URLs.
+        required: ['summary', 'source_url', 'source_title', 'source_quote', 'confidence_in_source'],
         properties: {
           summary: { type: 'string', minLength: 1 },
           source_url: { type: 'string' },
+          source_title: {
+            type: 'string',
+            minLength: 1,
+            description:
+              'The actual <title> (or og:title / first <h1>) of the fetched page. Copy verbatim from the page; do not paraphrase or invent.',
+          },
           source_quote: { type: 'string', minLength: 1 },
           confidence_in_source: { type: 'integer', minimum: 0, maximum: 10 },
         },

@@ -499,6 +499,10 @@ async function runPipeline(idea, client, { cancellationToken, bus } = {}) {
       open_tensions: synthesis.open_tensions,
       question_landscape: synthesis.question_landscape || null,
       dead_end_summary: synthesis.dead_end_summary || null,
+      sections: synthesis.sections || null,
+      tension_points: synthesis.tension_points || null,
+      key_references: synthesis.key_references || null,
+      next_pass_proposals: synthesis.next_pass_proposals || null,
     };
     inv.completed_at = new Date().toISOString();
     inv.progress.current_stage = 'complete';

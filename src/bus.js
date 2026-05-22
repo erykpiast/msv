@@ -30,6 +30,8 @@ const EVENTS = Object.freeze({
   WG_RESEARCHER_WEB_SEARCH: 'wg.researcher.web_search',
   WG_RESEARCHER_WEB_FETCH: 'wg.researcher.web_fetch',
   WG_RESEARCHER_DONE: 'wg.researcher.done',
+  WG_RESEARCHER_GROUNDING_DROP: 'wg.researcher.grounding_drop',
+  WG_RESEARCHER_GROUNDING_SUMMARY: 'wg.researcher.grounding_summary',
   WG_OBSERVATION_START: 'wg.observation.start',
   WG_OBSERVATION_DONE: 'wg.observation.done',
   WG_DEBATE_START: 'wg.debate.start',

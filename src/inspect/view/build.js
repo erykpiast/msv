@@ -249,6 +249,10 @@ function buildSynthesis(loaderInput) {
     open_tensions: synth.open_tensions ?? [],
     question_landscape: synth.question_landscape ?? undefined,
     dead_end_summary: synth.dead_end_summary ?? undefined,
+    sections: synth.sections ?? undefined,
+    tension_points: synth.tension_points ?? undefined,
+    key_references: synth.key_references ?? undefined,
+    next_pass_proposals: synth.next_pass_proposals ?? undefined,
   };
 }
 
