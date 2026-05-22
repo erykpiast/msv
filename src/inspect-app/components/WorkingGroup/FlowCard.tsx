@@ -28,7 +28,7 @@ export function FlowCard({
   const [opened, setOpened] = useState(false);
   return (
     <>
-      <Handle type="target" position={Position.Bottom} />
+      <Handle type="target" position={Position.Top} />
       <Popover
         opened={opened}
         onClose={() => setOpened(false)}
@@ -60,7 +60,7 @@ export function FlowCard({
         </Popover.Target>
         <Popover.Dropdown>{popover}</Popover.Dropdown>
       </Popover>
-      <Handle type="source" position={Position.Top} />
+      <Handle type="source" position={Position.Bottom} />
     </>
   );
 }
