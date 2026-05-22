@@ -60,7 +60,9 @@ export type WorkingGroupSubstage =
   | 'alignment'
   | 'researcher'
   | 'observation'
-  | 'debate';
+  | 'debate'
+  | 'conclusions'
+  | 'wg-map';
 
 export type LeafRef =
   | { kind: 'persona'; id: string }
@@ -69,6 +71,7 @@ export type LeafRef =
   | { kind: 'aligned'; id: string }
   | { kind: 'report'; id: string }
   | { kind: 'observation'; id: string }
+  | { kind: 'finding'; id: string }
   | { kind: 'move'; id: string }
   | { kind: 'claim'; id: string }
   | { kind: 'node'; id: string }
@@ -99,6 +102,8 @@ const KNOWN_WG_SUBSTAGES = new Set<WorkingGroupSubstage>([
   'researcher',
   'observation',
   'debate',
+  'conclusions',
+  'wg-map',
 ]);
 
 const KNOWN_LEAF_KINDS_WITH_ID = new Set<string>([
@@ -108,13 +113,13 @@ const KNOWN_LEAF_KINDS_WITH_ID = new Set<string>([
   'aligned',
   'report',
   'observation',
+  'finding',
   'move',
   'claim',
   'node',
 ]);
 
 const ID_PATTERN = /^[A-Za-z0-9_-]+$/;
-const WG_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
 
 // ---------------------------------------------------------------------------
 // Leaf parsing / formatting
@@ -193,7 +198,7 @@ export function parseCanvasRoute(hash: string): CanvasRoute {
     // ---- wg:<id> ----
     if (head.startsWith('wg:')) {
       const territoryId = head.slice('wg:'.length);
-      if (!territoryId || !WG_ID_PATTERN.test(territoryId)) return SAFE_DEFAULT;
+      if (!territoryId || !ID_PATTERN.test(territoryId)) return SAFE_DEFAULT;
 
       let substage: WorkingGroupSubstage | undefined;
       let leaf: LeafRef | undefined;

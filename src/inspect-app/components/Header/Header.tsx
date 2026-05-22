@@ -1,9 +1,8 @@
 import { useState } from 'react';
-import { Stack, Group, Title, Text, Alert, Anchor, Grid, Badge } from '@mantine/core';
+import { Stack, Group, Title, Text, Alert, Anchor, Badge } from '@mantine/core';
 import { useViewContext, useSseStatus } from '../../ViewContext';
 import { StatusPill } from './StatusPill';
 import { BudgetBar } from './BudgetBar';
-import { Section } from '../../primitives/Section';
 import { formatDuration } from '../../utils/format';
 
 export function Header() {
@@ -13,8 +12,7 @@ export function Header() {
   const [captureExpanded, setCaptureExpanded] = useState(false);
 
   return (
-    <Section title="Overview">
-      <Stack gap="md">
+    <Stack gap="md">
         <Stack gap={4}>
           <Group justify="space-between" align="baseline" gap="md" wrap="nowrap">
             <Title
@@ -79,32 +77,25 @@ export function Header() {
           </Alert>
         ) : null}
 
-        <Grid gap="md">
-          <Grid.Col span={{ base: 12, md: 6 }}>
-            <BudgetBar
-              label="Executor calls"
-              used={view.budget.used_executor_calls}
-              max={view.budget.max_executor_calls}
-            />
-          </Grid.Col>
-          <Grid.Col span={{ base: 12, md: 6 }}>
-            <BudgetBar
-              label="Tokens"
-              used={view.budget.used_total_tokens}
-              max={view.budget.max_total_tokens}
-            />
-          </Grid.Col>
+        <Group gap="lg" wrap="wrap" align="center">
+          <BudgetBar
+            label="Executor calls"
+            used={view.budget.used_executor_calls}
+            max={view.budget.max_executor_calls}
+          />
+          <BudgetBar
+            label="Tokens"
+            used={view.budget.used_total_tokens}
+            max={view.budget.max_total_tokens}
+          />
           {view.budget.max_researcher_tool_calls != null ? (
-            <Grid.Col span={{ base: 12, md: 6 }}>
-              <BudgetBar
-                label="Researcher tool calls"
-                used={view.budget.used_researcher_tool_calls ?? 0}
-                max={view.budget.max_researcher_tool_calls}
-              />
-            </Grid.Col>
+            <BudgetBar
+              label="Researcher tool calls"
+              used={view.budget.used_researcher_tool_calls ?? 0}
+              max={view.budget.max_researcher_tool_calls}
+            />
           ) : null}
-        </Grid>
-      </Stack>
-    </Section>
+        </Group>
+    </Stack>
   );
 }
