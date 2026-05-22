@@ -1,11 +1,13 @@
 import type { ReactNode } from 'react';
-import { Badge, Skeleton, Stack, Text } from '@mantine/core';
-import type { InvestigationView, WorkingGroupView } from '../../inspect/types';
+import { Badge, Group, Skeleton, Stack, Text } from '@mantine/core';
+import type { InvestigationView, Move, WorkingGroupView } from '../../inspect/types';
+import { isAlignmentMove } from '../utils/moveStage';
 import type { ProgressOverlay } from '../hooks/useLiveProgress';
 import type { LeafRef, WorkingGroupSubstage } from '../hooks/useHashRoute';
 import { PersonaCard } from '../components/Discovery/PersonaCard';
 import { SubQuestionCard } from '../components/Coordinator/SubQuestionCard';
 import { MoveCard } from '../components/Debate/MoveCard';
+import { EvidencePanel } from '../components/WorkingGroup/EvidencePanel';
 import { Markdown } from '../components/Synthesis/Markdown';
 import { IdeationPanel } from '../components/WorkingGroup/IdeationPanel';
 import { AdversarialPanel } from '../components/WorkingGroup/AdversarialPanel';
@@ -13,6 +15,7 @@ import { AlignmentPanel } from '../components/WorkingGroup/AlignmentPanel';
 import { ResearcherPanel } from '../components/WorkingGroup/ResearcherPanel';
 import { ObservationPanel } from '../components/WorkingGroup/ObservationPanel';
 import { DebatePanel } from '../components/WorkingGroup/DebatePanel';
+import { ConclusionsPanel } from '../components/WorkingGroup/ConclusionsPanel';
 import { WgMapPanel } from '../components/WorkingGroup/WgMapPanel';
 
 type Rendered = { title: string; body: ReactNode; raw?: string };
@@ -122,6 +125,43 @@ export function renderLeaf(
         raw: JSON.stringify(rr, null, 2),
       };
     }
+    case 'finding': {
+      // Findings live inside ResearcherReport.findings across all WGs.
+      let foundFinding: import('../../inspect/types').Finding | undefined;
+      let foundReport: import('../../inspect/types').ResearcherReport | undefined;
+      for (const w of Object.values(view.working_groups ?? {})) {
+        for (const rr of w.researcher_reports ?? []) {
+          const f = rr.findings.find((x) => x.finding_id === leaf.id);
+          if (f) { foundFinding = f; foundReport = rr; break; }
+        }
+        if (foundFinding) break;
+      }
+      if (!foundFinding) return null;
+      const f = foundFinding;
+      return {
+        title: `Finding: ${f.nickname ? `${f.nickname} · ${f.finding_id}` : f.finding_id}`,
+        body: (
+          <Stack gap="xs">
+            <Text>{String(f.content ?? '')}</Text>
+            {f.source_url ? (
+              <Text size="sm">
+                source:{' '}
+                <a href={f.source_url} target="_blank" rel="noopener noreferrer">
+                  {f.source_title ?? f.source_url}
+                </a>
+              </Text>
+            ) : null}
+            {f.quality ? (
+              <Badge variant="light">{f.quality}</Badge>
+            ) : null}
+            {foundReport ? (
+              <Text size="xs" c="dimmed">from report {foundReport.report_id}</Text>
+            ) : null}
+          </Stack>
+        ),
+        raw: JSON.stringify(f, null, 2),
+      };
+    }
     case 'observation': {
       const wg = findWGWhere(view, (w) =>
         (w.observations ?? []).some((o) => o.observation_id === leaf.id)
@@ -171,15 +211,62 @@ export function renderLeaf(
         }
         return null;
       }
+
+      // Alignment moves live in the same wg.moves array but use a different
+      // schema (no evidence_refs/confidence, candidate_id / merged_candidate_ids
+      // instead). Render an alignment-specific card; MoveCard + EvidencePanel
+      // are only meaningful for debate moves.
+      if (isAlignmentMove(move)) {
+        const candidateIds: string[] = move.merged_candidate_ids?.length
+          ? move.merged_candidate_ids
+          : move.candidate_id
+            ? [move.candidate_id]
+            : [];
+        return {
+          title: `${move.type} by ${personaName(move.by_persona_id)}`,
+          body: (
+            <Stack gap="xs">
+              <Group gap="xs" wrap="wrap">
+                <Badge variant="light">{move.type}</Badge>
+                <Text size="xs" c="dimmed">{move.move_id}</Text>
+              </Group>
+              <Text>{move.content}</Text>
+              {move.rationale ? (
+                <Text size="sm" c="dimmed">rationale: {move.rationale}</Text>
+              ) : null}
+              {candidateIds.length > 0 ? (
+                <Text size="sm" c="dimmed">
+                  candidate{candidateIds.length === 1 ? '' : 's'}: {candidateIds.join(', ')}
+                </Text>
+              ) : null}
+            </Stack>
+          ),
+          raw: JSON.stringify(move, null, 2),
+        };
+      }
+
+      // From here on, `move` is narrowed to a debate Move. EvidencePanel
+      // expects Move[], so we strip any alignment moves out of wg.moves at the
+      // call site.
       const survivingIds = new Set((wg.surviving_claims ?? []).map((c) => c.originating_move_id));
+      const findings = (wg.researcher_reports ?? []).flatMap((r) => r.findings);
+      const debateMoves = (wg.moves ?? []).filter((m): m is Move => !isAlignmentMove(m));
       return {
         title: `${move.type} by ${personaName(move.by_persona_id)}`,
         body: (
-          <MoveCard
-            move={move}
-            personaName={personaName}
-            isSurviving={survivingIds.has(move.move_id)}
-          />
+          <Stack gap="md">
+            <MoveCard
+              move={move}
+              personaName={personaName}
+              isSurviving={survivingIds.has(move.move_id)}
+            />
+            <EvidencePanel
+              selectedMoveId={move.move_id}
+              moves={debateMoves}
+              observations={wg.observations ?? []}
+              findings={findings}
+            />
+          </Stack>
         ),
         raw: JSON.stringify(move, null, 2),
       };
@@ -298,6 +385,13 @@ export function renderLeaf(
         case 'debate':
           body = <DebatePanel wg={wg} personaName={personaName} survivingIds={survivingIds} />;
           break;
+        case 'conclusions':
+          body = <ConclusionsPanel wg={wg} personaName={personaName} />;
+          break;
+        // 'wg-map' is no longer a substage that opens a drawer — it's a
+        // top-level tab in WorkingGroupCanvas. This case is reachable only via
+        // an old deep-link URL of the form `leaf=wgPanel:wg-map` (URL
+        // backward-compat only).
         case 'wg-map':
           body = <WgMapPanel wg={wg} />;
           break;
