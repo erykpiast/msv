@@ -61,6 +61,7 @@ export type WorkingGroupSubstage =
   | 'researcher'
   | 'observation'
   | 'debate'
+  | 'conclusions'
   | 'wg-map';
 
 export type LeafRef =
@@ -70,6 +71,7 @@ export type LeafRef =
   | { kind: 'aligned'; id: string }
   | { kind: 'report'; id: string }
   | { kind: 'observation'; id: string }
+  | { kind: 'finding'; id: string }
   | { kind: 'move'; id: string }
   | { kind: 'claim'; id: string }
   | { kind: 'node'; id: string }
@@ -100,6 +102,7 @@ const KNOWN_WG_SUBSTAGES = new Set<WorkingGroupSubstage>([
   'researcher',
   'observation',
   'debate',
+  'conclusions',
   'wg-map',
 ]);
 
@@ -110,6 +113,7 @@ const KNOWN_LEAF_KINDS_WITH_ID = new Set<string>([
   'aligned',
   'report',
   'observation',
+  'finding',
   'move',
   'claim',
   'node',
