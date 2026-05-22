@@ -108,13 +108,14 @@ export type WorkingGroupView = {
   aligned_questions: AlignedQuestion[];
   researcher_reports: ResearcherReport[];
   observations: Observation[];
-  moves: Move[];
+  moves: (Move | AlignmentMove)[];
   surviving_claims: SurvivingClaim[];
   terminated_by: string | null;
   confidence_trajectory: ConfidencePoint[];
 };
 
 export type MoveType = 'Claim' | 'Support' | 'Rebut' | 'Question' | 'Concede';
+export type AlignmentMoveType = 'Propose' | 'Sharpen' | 'Merge' | 'Drop' | 'Defer';
 
 export type Move = {
   move_id: string;
@@ -128,11 +129,31 @@ export type Move = {
   attempt?: number | null;
   synthesized?: boolean;
   usage?: TokenUsage | null;
+  /** wg.moves mixes alignment and debate moves; this field discriminates. */
+  stage?: 'alignment' | 'debate';
   // v5 only — observation and finding citations for Claims
   evidence_refs?: EvidenceRef[];
   /** Cosmetic display label set by the per-sub-stage WG nicknamer. Absent on older
    * logs predating the nicknamer or when the nicknamer's LLM call failed. */
   nickname?: string;
+};
+
+/** Alignment-stage move recorded in wg.moves with stage='alignment'.
+ * Distinct schema from debate Move: targets candidate questions (not other
+ * moves) and uses the `AlignmentMoveType` union. */
+export type AlignmentMove = {
+  move_id: string;
+  by_persona_id: string;
+  type: AlignmentMoveType;
+  content: string;
+  stage: 'alignment';
+  candidate_id?: string;
+  merged_candidate_ids?: string[];
+  rationale?: string;
+  is_final?: boolean;
+  timestamp?: string;
+  attempt?: number | null;
+  usage?: TokenUsage | null;
 };
 
 export type TokenUsage = {
