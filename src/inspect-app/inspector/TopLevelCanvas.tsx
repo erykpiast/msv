@@ -10,7 +10,6 @@ import { WorkingGroupNode } from './nodes/WorkingGroupNode';
 import { CrossPollinationNode } from './nodes/CrossPollinationNode';
 import { ForumStageNode } from './nodes/ForumStageNode';
 import { SynthesisNode } from './nodes/SynthesisNode';
-import { tokens } from '../theme/tokens';
 import type { CanvasRoute } from '../hooks/useHashRoute';
 
 const nodeTypes: NodeTypes = {
@@ -41,7 +40,8 @@ export function TopLevelCanvas({
   return (
     <Box
       style={{
-        height: tokens.graphHeight,
+        height: 'calc(100vh - 260px)',
+        minHeight: 400,
         border: '1px solid #e5e7eb',
         borderRadius: 8,
       }}

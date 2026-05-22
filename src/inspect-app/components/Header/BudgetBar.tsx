@@ -1,4 +1,4 @@
-import { Progress, Stack, Group, Text, Tooltip } from '@mantine/core';
+import { Progress, Group, Text, Tooltip } from '@mantine/core';
 import { formatNumber, formatPercent } from '../../utils/format';
 
 function pickColor(used: number, max: number): string {
@@ -23,18 +23,30 @@ export function BudgetBar({
   const pct = max ? Math.min(150, (used / max) * 100) : 0;
   const color = pickColor(used, max);
   return (
-    <Stack gap={4}>
-      <Group justify="space-between">
-        <Text size="xs" fw={500} c="dimmed" tt="uppercase">
-          {label}
+    <Group gap="xs" wrap="nowrap" style={{ flex: 1, minWidth: 200 }}>
+      <Text
+        size="xs"
+        fw={500}
+        c="dimmed"
+        tt="uppercase"
+        style={{ whiteSpace: 'nowrap' }}
+      >
+        {label}
+      </Text>
+      <Tooltip
+        label={`${formatter(used)} / ${formatter(max)} · ${formatPercent(used, max)}`}
+      >
+        <Text size="xs" fw={600} style={{ whiteSpace: 'nowrap' }}>
+          {formatter(used)} / {formatter(max)}
         </Text>
-        <Tooltip label={`${formatter(used)} / ${formatter(max)} · ${formatPercent(used, max)}`}>
-          <Text size="xs" fw={600}>
-            {formatter(used)} / {formatter(max)}
-          </Text>
-        </Tooltip>
-      </Group>
-      <Progress value={pct} color={color} radius="sm" size="md" />
-    </Stack>
+      </Tooltip>
+      <Progress
+        value={pct}
+        color={color}
+        radius="sm"
+        size="xs"
+        style={{ flex: 1, minWidth: 60 }}
+      />
+    </Group>
   );
 }

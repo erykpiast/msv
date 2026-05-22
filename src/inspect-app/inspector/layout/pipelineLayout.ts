@@ -9,6 +9,7 @@ export type ExpandedSet = Set<ExpandedStage>;
 const PER_ROW_PX = 36;
 const COLUMN_GAP_PX = 40;
 const COLLISION_GAP_PX = 16;
+const WG_COL_GAP_PX = 24;                    // horizontal gap between WG sub-columns
 const EXPANDED_DISCOVERY_HEADER_PX = 80;     // title + spoiler chrome above persona rows
 const EXPANDED_TERRITORY_ROW_PX = 60;        // one coordinator territory row
 const EXPANDED_PADDING_PX = 40;              // generic bottom padding for expanded blocks
@@ -50,12 +51,12 @@ const COLUMN_ORDER: ColumnKey[] = [
   'discovery', 'coordinator', 'workingGroup', 'crossPollination', 'forum', 'synthesis',
 ];
 
-function computeColumnX(expanded: ExpandedSet): Record<ColumnKey, number> {
-  const { pipelineColumnX: col, stageBox, wgBox } = tokens;
+function computeColumnX(expanded: ExpandedSet, wgBlockWidth: number): Record<ColumnKey, number> {
+  const { pipelineColumnX: col, stageBox } = tokens;
   const widths: Record<ColumnKey, number> = {
     discovery: expanded.has('discovery') ? expandedWidth.discovery : stageBox.width,
     coordinator: expanded.has('coordinator') ? expandedWidth.coordinator : stageBox.width,
-    workingGroup: wgBox.width,
+    workingGroup: wgBlockWidth,
     crossPollination: expanded.has('cross_pollination') ? expandedWidth.cross_pollination : stageBox.width,
     forum: stageBox.width,
     synthesis: stageBox.width,
@@ -72,12 +73,45 @@ function computeColumnX(expanded: ExpandedSet): Record<ColumnKey, number> {
 
 type ExpandableNodeData = { expanded?: boolean; expandedHeight?: number };
 
+// Place N uniform-height items in a 2-column staggered pattern (the right
+// column's cards slot vertically between the left column's cards, like
+// fish-scales). For N items each at full card height H with a small in-column
+// gap g, the vertical extent is ((N - 1) * (H + g) / 2) + H — roughly 60% of
+// a single-column stack of the same N.
+function planWgStagger(n: number): {
+  positions: { col: number; staggerStep: number }[]; // step is i; visual y = stepUnit * step
+  numCols: number;
+  staggerSteps: number; // number of half-rows the layout spans (= n - 1 when n > 0)
+} {
+  if (n === 0) {
+    return { positions: [], numCols: 1, staggerSteps: 0 };
+  }
+  if (n === 1) {
+    return {
+      positions: [{ col: 0, staggerStep: 0 }],
+      numCols: 1,
+      staggerSteps: 0,
+    };
+  }
+  const positions = Array.from({ length: n }, (_, i) => ({
+    col: i % 2,
+    staggerStep: i,
+  }));
+  return { positions, numCols: 2, staggerSteps: n - 1 };
+}
+
 export function pipelineLayout(
   view: InvestigationView,
   expanded: ExpandedSet = new Set()
 ): { nodes: Node[]; edges: Edge[] } {
   const { pipelineRowY: y, stageBox, wgBox, wgStackGap } = tokens;
-  const col = computeColumnX(expanded);
+
+  const territoryIds = Object.keys(view.working_groups ?? {});
+  const stagger = planWgStagger(territoryIds.length);
+
+  const wgBlockWidth =
+    stagger.numCols * wgBox.width + (stagger.numCols - 1) * WG_COL_GAP_PX;
+  const col = computeColumnX(expanded, wgBlockWidth);
   const nodes: Node[] = [];
   const edges: Edge[] = [];
 
@@ -108,15 +142,16 @@ export function pipelineLayout(
   });
   edges.push(edge('discovery', 'coordinator'));
 
-  // Working Groups — coordinator-order, vertically centred around `y`.
-  const territoryIds = Object.keys(view.working_groups ?? {});
-  const stackCount = territoryIds.length;
-  const stackTotalHeight =
-    stackCount * wgBox.heightCollapsed + Math.max(stackCount - 1, 0) * wgStackGap;
-  const stackTop =
-    y + stageBox.heightCollapsed / 2 - stackTotalHeight / 2;
+  // Working Groups — staggered two-column layout centred around `y`. Each
+  // stagger step shifts the y down by half a slot, so alternate cards slot
+  // between the previous-column cards rather than below them.
+  const staggerStepY = (wgBox.heightCollapsed + wgStackGap) / 2;
+  const wgBlockHeight = stagger.staggerSteps * staggerStepY + wgBox.heightCollapsed;
+  const wgBlockTop = y + stageBox.heightCollapsed / 2 - wgBlockHeight / 2;
   territoryIds.forEach((tid, idx) => {
-    const wgY = stackTop + idx * (wgBox.heightCollapsed + wgStackGap);
+    const { col: wgCol, staggerStep } = stagger.positions[idx]!;
+    const wgX = col.workingGroup + wgCol * (wgBox.width + WG_COL_GAP_PX);
+    const wgY = wgBlockTop + staggerStep * staggerStepY;
     const wg = view.working_groups[tid];
     const status: StageStatus =
       wg.terminated_by === 'completed'
@@ -127,7 +162,7 @@ export function pipelineLayout(
     nodes.push({
       id: `wg:${tid}`,
       type: 'workingGroup',
-      position: { x: col.workingGroup, y: wgY },
+      position: { x: wgX, y: wgY },
       data: { view, territoryId: tid, status },
       draggable: false,
       selectable: true,
@@ -179,8 +214,12 @@ export function pipelineLayout(
   }
 
   // Collision-shift: within each column (same x), sort by y and shift overlapping nodes down.
+  // Skip WG nodes — their staggered layout is intentional and won't collide
+  // within a column (each column holds either even-indexed or odd-indexed
+  // items, never adjacent stagger steps).
   const byColumn = new Map<number, Node[]>();
   for (const n of nodes) {
+    if (n.id.startsWith('wg:')) continue;
     const colNodes = byColumn.get(n.position.x) ?? [];
     colNodes.push(n);
     byColumn.set(n.position.x, colNodes);
@@ -191,8 +230,7 @@ export function pipelineLayout(
       const cur = colNodes[i]!;
       const next = colNodes[i + 1]!;
       const curData = cur.data as ExpandableNodeData;
-      const isWg = cur.id.startsWith('wg:');
-      const fallbackHeight = isWg ? tokens.wgBox.heightCollapsed : tokens.stageBox.heightCollapsed;
+      const fallbackHeight = tokens.stageBox.heightCollapsed;
       const curHeight = curData.expanded
         ? (curData.expandedHeight ?? fallbackHeight)
         : fallbackHeight;
