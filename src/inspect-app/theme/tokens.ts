@@ -33,6 +33,10 @@ export const tokens = {
   subStageGap: 30,
   headerHeight: 56,
   bannerHeight: 44,
+  canvasChrome: {
+    base: 260, // header + breadcrumb + tabs + pair-row chrome
+    withChart: 460, // base + confidence-chart slot
+  },
 } as const;
 
 export const edgeColors = {
