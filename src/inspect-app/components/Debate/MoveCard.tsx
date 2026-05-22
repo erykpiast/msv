@@ -3,6 +3,7 @@ import type { Move } from '../../../inspect/types';
 import { Card } from '../../primitives/Card';
 import { personaColor } from '../../theme/personas';
 import { PersonaChip } from '../../primitives/PersonaChip';
+import { useCanvasRoute } from '../../hooks/useHashRoute';
 
 const TYPE_COLOR: Record<Move['type'], string> = {
   Claim: 'blue',
@@ -22,6 +23,12 @@ export function MoveCard({
   isSurviving: boolean;
 }) {
   const color = personaColor(move.by_persona_id);
+  const { route, setRoute } = useCanvasRoute();
+  const openLeaf = (leaf: { kind: 'observation' | 'finding'; id: string }) => {
+    // Only WG routes carry a leaf; from other canvases we leave navigation
+    // alone since the user landed here via a different entry point.
+    if (route.canvas === 'wg') setRoute({ ...route, leaf });
+  };
 
   return (
     <div id={`move-${move.move_id}`}>
@@ -40,9 +47,15 @@ export function MoveCard({
                 confidence {move.confidence}
               </Text>
               {move.references_move_id ? (
-                <Anchor href={`#move-${move.references_move_id}`} size="xs">
-                  refs {move.references_move_id}
-                </Anchor>
+                /^[A-Za-z0-9_-]+$/.test(move.references_move_id) ? (
+                  <Anchor href={`#move-${move.references_move_id}`} size="xs">
+                    refs {move.references_move_id}
+                  </Anchor>
+                ) : (
+                  <Text size="xs" c="dimmed">
+                    refs {move.references_move_id}
+                  </Text>
+                )
               ) : null}
             </Group>
             {isSurviving ? (
@@ -74,11 +87,21 @@ export function MoveCard({
               </Text>
               {move.evidence_refs.map((ref, i) => {
                 const id = 'observation_id' in ref ? ref.observation_id : ref.finding_id;
-                const kind = 'observation_id' in ref ? 'obs' : 'finding';
+                const kind: 'observation' | 'finding' =
+                  'observation_id' in ref ? 'observation' : 'finding';
+                const label = kind === 'observation' ? 'obs' : 'finding';
                 return (
-                  <Code key={i} style={{ fontSize: 11 }}>
-                    {kind}:{id}
-                  </Code>
+                  <Anchor
+                    key={i}
+                    component="button"
+                    type="button"
+                    onClick={() => openLeaf({ kind, id })}
+                    style={{ padding: 0 }}
+                  >
+                    <Code style={{ fontSize: 11, cursor: 'pointer' }}>
+                      {label}:{id}
+                    </Code>
+                  </Anchor>
                 );
               })}
             </Group>

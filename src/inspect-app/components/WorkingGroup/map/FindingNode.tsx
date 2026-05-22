@@ -28,7 +28,7 @@ export function FindingNode({ data }: NodeProps<FindingNodeType>) {
           ) : null}
           <Text size="sm">{finding.content}</Text>
           {finding.source_url ? (
-            <Anchor href={finding.source_url} target="_blank" size="xs">
+            <Anchor href={finding.source_url} target="_blank" rel="noopener noreferrer" size="xs">
               {finding.source_title ?? finding.source_url}
             </Anchor>
           ) : null}
