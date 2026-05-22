@@ -8,7 +8,7 @@ import type {
   Finding,
   ResearcherReport,
 } from '../../../inspect/types';
-import { WgMapPanel } from './WgMapPanel';
+import { WgMapPanel, nodeIdToLeaf } from './WgMapPanel';
 
 function makeTerritory(id: string): Territory {
   return {
@@ -92,5 +92,31 @@ describe('WgMapPanel', () => {
 
     const { container } = renderPanel({ wg });
     expect(container.querySelector('.react-flow')).not.toBeNull();
+  });
+});
+
+describe('nodeIdToLeaf', () => {
+  it('maps the "t:" prefix to a territory leaf', () => {
+    expect(nodeIdToLeaf('t:t1')).toEqual({ kind: 'territory', id: 't1' });
+  });
+
+  it('maps the "aq:" prefix to an aligned leaf', () => {
+    expect(nodeIdToLeaf('aq:aq1')).toEqual({ kind: 'aligned', id: 'aq1' });
+  });
+
+  it('maps the "f:" prefix to a finding leaf', () => {
+    expect(nodeIdToLeaf('f:f1')).toEqual({ kind: 'finding', id: 'f1' });
+  });
+
+  it('maps the "o:" prefix to an observation leaf', () => {
+    expect(nodeIdToLeaf('o:obs1')).toEqual({ kind: 'observation', id: 'obs1' });
+  });
+
+  it('returns null for an unknown prefix', () => {
+    expect(nodeIdToLeaf('x:unknown')).toBeNull();
+  });
+
+  it('returns null when the id has no colon at all', () => {
+    expect(nodeIdToLeaf('no-colon')).toBeNull();
   });
 });
