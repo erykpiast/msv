@@ -1,5 +1,5 @@
 import type { Edge, Node } from '@xyflow/react';
-import type { InvestigationView, StageStatus } from '../../../inspect/types';
+import type { InvestigationView, StageStatus, WorkingGroupView } from '../../../inspect/types';
 import { tokens, edgeColors } from '../../theme/tokens';
 import type { ExpandedStage } from '../../hooks/useHashRoute';
 
@@ -153,12 +153,7 @@ export function pipelineLayout(
     const wgX = col.workingGroup + wgCol * (wgBox.width + WG_COL_GAP_PX);
     const wgY = wgBlockTop + staggerStep * staggerStepY;
     const wg = view.working_groups[tid];
-    const status: StageStatus =
-      wg.terminated_by === 'completed'
-        ? 'done'
-        : (wg.moves?.length ?? 0) > 0 || (wg.aligned_questions?.length ?? 0) > 0
-        ? 'partial'
-        : 'not_run';
+    const status: StageStatus = wgStatusFromTerminatedBy(wg);
     nodes.push({
       id: `wg:${tid}`,
       type: 'workingGroup',
@@ -251,4 +246,35 @@ function edge(source: string, target: string): Edge {
     target,
     style: { stroke: edgeColors.stageFlow, strokeWidth: 1.5 },
   };
+}
+
+// Maps a working group's `terminated_by` value to a StageStatus.
+// Values set by working_group.js:
+//   - null                                              → run not finished
+//   - 'mutual_concession' | 'budget_exhausted'          → debate ended normally (done)
+//   - 'ideation_failure' | 'alignment_failure'          → pair aborted before
+//                                                         producing useful output (failed)
+//   - 'all_dead_end'                                    → researcher reports all dead-end,
+//                                                         no surviving claims (failed)
+// When `terminated_by` is null, we surface progress via the `partial` state if
+// the WG has already produced any moves or aligned questions, otherwise
+// `not_run`.
+function wgStatusFromTerminatedBy(wg: WorkingGroupView): StageStatus {
+  switch (wg.terminated_by) {
+    case 'mutual_concession':
+    case 'budget_exhausted':
+      return 'done';
+    case 'ideation_failure':
+    case 'alignment_failure':
+    case 'all_dead_end':
+      return 'failed';
+    case null:
+      return (wg.moves?.length ?? 0) > 0 || (wg.aligned_questions?.length ?? 0) > 0
+        ? 'partial'
+        : 'not_run';
+    default:
+      // Unknown non-null value — treat as failed to surface the anomaly rather
+      // than silently downgrading to 'not_run'.
+      return 'failed';
+  }
 }

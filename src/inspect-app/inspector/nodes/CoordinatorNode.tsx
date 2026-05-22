@@ -4,7 +4,7 @@ import type { Node, NodeProps } from '@xyflow/react';
 import { StageNodeShell } from './StageNodeShell';
 import { useExpandedStages } from '../../hooks/useExpandedStages';
 import { useSetRoute } from '../../hooks/useHashRoute';
-import { useProgressOverlay } from '../../ViewContext';
+import { useIsStageInProgress } from '../../ViewContext';
 import { expandedWidth } from '../layout/pipelineLayout';
 import type { InvestigationView, StageStatus } from '../../../inspect/types';
 
@@ -15,8 +15,7 @@ export const CoordinatorNode = memo(function CoordinatorNode({ data }: NodeProps
   const { view, status } = data;
   const { toggle, isExpanded } = useExpandedStages();
   const setRoute = useSetRoute();
-  const overlay = useProgressOverlay();
-  const isLive = overlay.inProgressStages.has('coordinator');
+  const isLive = useIsStageInProgress('coordinator');
   const exp = isExpanded('coordinator');
 
   const territories = view.coordinator.territories.length;

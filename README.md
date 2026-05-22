@@ -114,6 +114,13 @@ live — stage nodes animate, drawer content populates as it is produced, and a
 **LIVE** badge appears in the header. No refresh needed. When no run is active,
 the inspector shows the last-persisted snapshot.
 
+Live updates flow through an HTTP relay from `msv run` to the inspector. By
+default the relay posts to the inspector on its auto-selected port. If you pin
+a custom port via `--port`, set `MSV_INSPECT_URL=http://127.0.0.1:<port>/events`
+before running `msv run` so events reach the right inspector. Set
+`MSV_NO_RELAY=1` to disable live updates entirely (the inspector falls back to
+the last-persisted snapshot).
+
 The terminal stays attached until Ctrl-C.
 
 ### `msv review`

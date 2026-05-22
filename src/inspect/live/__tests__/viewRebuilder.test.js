@@ -157,3 +157,116 @@ test('atomicWriteText is called with the correct path and JSON content', async (
   assert.deepEqual(parsed, m.fakeView);
   assert.ok(text.endsWith('\n'), 'output ends with newline');
 });
+
+test('concurrent flushNow calls do not produce overlapping rebuilds (M19)', async () => {
+  let inflightCount = 0;
+  let maxInflight = 0;
+  let loadCalls = 0;
+
+  const slowLoad = async () => {
+    inflightCount++;
+    loadCalls++;
+    maxInflight = Math.max(maxInflight, inflightCount);
+    await new Promise((r) => setTimeout(r, 10));
+    inflightCount--;
+    return { index: {}, logs: {}, enrichments: {} };
+  };
+
+  const rebuilder = createViewRebuilder({
+    ideaDir: '/fake/idea',
+    broker: { publishView() {} },
+    _buildLoaderInput: slowLoad,
+    _buildView: () => ({ id: 'x' }),
+    _atomicWriteText: async () => {},
+  });
+
+  await Promise.all([
+    rebuilder.flushNow(),
+    rebuilder.flushNow(),
+    rebuilder.flushNow(),
+  ]);
+
+  assert.equal(maxInflight, 1, 'no two rebuilds run concurrently');
+  // At most one extra follow-up rebuild — initial + coalesced follow-up = 2 max.
+  assert.ok(loadCalls <= 2, `load called at most twice, got ${loadCalls}`);
+});
+
+test('requestRebuild does not start a new rebuild while one is in flight (M19)', async () => {
+  let inflightCount = 0;
+  let maxInflight = 0;
+
+  const slowLoad = async () => {
+    inflightCount++;
+    maxInflight = Math.max(maxInflight, inflightCount);
+    await new Promise((r) => setTimeout(r, 20));
+    inflightCount--;
+    return { index: {}, logs: {}, enrichments: {} };
+  };
+
+  const rebuilder = createViewRebuilder({
+    ideaDir: '/fake/idea',
+    broker: { publishView() {} },
+    _buildLoaderInput: slowLoad,
+    _buildView: () => ({ id: 'x' }),
+    _atomicWriteText: async () => {},
+  });
+
+  // Kick off a flushNow (starts a rebuild immediately).
+  const p = rebuilder.flushNow();
+  // While that rebuild is in-flight, fire several requestRebuild calls.
+  // They should be no-ops because inFlight is set.
+  for (let i = 0; i < 10; i++) rebuilder.requestRebuild();
+
+  await p;
+  // Allow any debounced timer that snuck through to fire (it shouldn't).
+  await new Promise((r) => setTimeout(r, 350));
+
+  assert.equal(maxInflight, 1, 'requestRebuild while in-flight does not start a second rebuild');
+});
+
+test('readLogs caches parsed files by size+mtimeMs (H7)', async () => {
+  const fs = require('node:fs/promises');
+  const os = require('node:os');
+  const fsPath = require('node:path');
+  const { readLogs, _clearCache } = require('../../loader/readLogs');
+
+  _clearCache();
+
+  const tmp = await fs.mkdtemp(fsPath.join(os.tmpdir(), 'msv-readlogs-cache-'));
+  const logsDir = fsPath.join(tmp, 'logs');
+  await fs.mkdir(logsDir, { recursive: true });
+  const fileA = fsPath.join(logsDir, 'a.jsonl');
+  await fs.writeFile(fileA, JSON.stringify({ n: 1 }) + '\n' + JSON.stringify({ n: 2 }) + '\n');
+
+  // Spy on fs.readFile via monkey-patch: count invocations against fileA.
+  const origReadFile = fs.readFile.bind(fs);
+  let readFileCalls = 0;
+  const fsMod = require('node:fs/promises');
+  fsMod.readFile = async (...args) => {
+    if (args[0] === fileA) readFileCalls++;
+    return origReadFile(...args);
+  };
+
+  try {
+    const first = await readLogs(tmp);
+    assert.deepEqual(first.a, [{ n: 1 }, { n: 2 }]);
+    assert.equal(readFileCalls, 1, 'first read parses the file');
+
+    const second = await readLogs(tmp);
+    assert.deepEqual(second.a, [{ n: 1 }, { n: 2 }]);
+    assert.equal(readFileCalls, 1, 'second read served from cache (no re-read)');
+
+    // Append → size changes → cache invalidates and re-parses.
+    // Force a different mtime by waiting 10ms (filesystem timestamp granularity).
+    await new Promise((r) => setTimeout(r, 10));
+    await fs.appendFile(fileA, JSON.stringify({ n: 3 }) + '\n');
+
+    const third = await readLogs(tmp);
+    assert.deepEqual(third.a, [{ n: 1 }, { n: 2 }, { n: 3 }]);
+    assert.equal(readFileCalls, 2, 'append invalidates cache, file re-parsed');
+  } finally {
+    fsMod.readFile = origReadFile;
+    await fs.rm(tmp, { recursive: true, force: true });
+    _clearCache();
+  }
+});

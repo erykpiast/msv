@@ -3,7 +3,7 @@ import { Group, Paper, Stack, Text } from '@mantine/core';
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react';
 import { StageStatusPip } from '../StageStatusPip';
 import { useCanvasRoute, type WorkingGroupSubstage } from '../../hooks/useHashRoute';
-import { useProgressOverlay } from '../../ViewContext';
+import { useWgSubstage } from '../../ViewContext';
 import type { WorkingGroupView, StageStatus } from '../../../inspect/types';
 import { tokens } from '../../theme/tokens';
 
@@ -46,8 +46,8 @@ const SUMMARY: Record<PipelineSubstage, (wg: WorkingGroupView) => string> = {
 export const SubStageNode = memo(function SubStageNode({ data }: NodeProps<SubStageNodeType>) {
   const { wg, substage, status, territoryId } = data;
   const { route, setRoute } = useCanvasRoute();
-  const overlay = useProgressOverlay();
-  const isLive = overlay.wgSubstage.get(territoryId) === substage;
+  const liveSubstage = useWgSubstage(territoryId);
+  const isLive = liveSubstage === substage;
   const effectiveStatus: StageStatus = isLive ? 'in_progress' : status;
   const handleInteract = () => {
     if (route.canvas === 'wg') {

@@ -431,6 +431,15 @@ async function runWorkingGroup({
 
   if (!isSubStageComplete(wgProgressValue, 'researcher')) {
     async function researchOne(aq) {
+      // Substage-activation event: emitted here (not in researcher.js) so that
+      // territory_id matches the safeSlug key the SPA SubStageNode looks up in
+      // overlay.wgSubstage. Spec §10.6 documents 'wg.researcher.start × M' —
+      // one emission per aligned question, before runJointResearcher.
+      if (bus) bus.emit('wg.researcher.start', {
+        territory_id: safeTerritoryId,
+        aligned_id: aq.aligned_id,
+        question: aq.question,
+      });
       const attempt = await withRetry(
         () =>
           runJointResearcher({

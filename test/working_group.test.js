@@ -562,6 +562,9 @@ test('working_group.js emits every required event from spec §10.6', () => {
     'utf8'
   );
   // Spec §10.6 — events emitted directly inside runWorkingGroup.
+  // wg.researcher.start is emitted from working_group.js (not researcher.js)
+  // so the substage-activation event uses safeSlug(territoryId) — matching the
+  // key the SPA SubStageNode uses to look up in_progress state.
   const REQUIRED_WG = [
     'wg.start',
     'wg.ideation.start',
@@ -572,6 +575,7 @@ test('working_group.js emits every required event from spec §10.6', () => {
     'wg.alignment.start',
     'wg.alignment.done',
     'wg.move',
+    'wg.researcher.start',
     'wg.observation.start',
     'wg.observation.done',
     'wg.debate.start',
@@ -613,8 +617,11 @@ test('researcher.js emits every required wg.researcher.* event from spec §10.6'
     path.join(__dirname, '..', 'src', 'agents', 'researcher.js'),
     'utf8'
   );
+  // wg.researcher.start has moved to working_group.js (see test above) so the
+  // substage-activation event is keyed on safeSlug(territoryId) like every other
+  // substage start. The per-aligned-question observability events (turn,
+  // web_search, web_fetch, done) remain here.
   const REQUIRED_RESEARCHER = [
-    'wg.researcher.start',
     'wg.researcher.turn',
     'wg.researcher.web_search',
     'wg.researcher.web_fetch',

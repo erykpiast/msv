@@ -9,7 +9,6 @@ export type ProgressOverlay = {
   inProgressStages: Set<string>;
   inProgressWg: Set<string>;
   wgSubstage: Map<string, string>;
-  researcherActivity: Map<string, string>;
 };
 
 const WG_SUBSTAGE_START: Record<string, string> = {
@@ -26,7 +25,6 @@ export function emptyProgress(): ProgressOverlay {
     inProgressStages: new Set(),
     inProgressWg: new Set(),
     wgSubstage: new Map(),
-    researcherActivity: new Map(),
   };
 }
 
@@ -38,11 +36,24 @@ function withStage(prev: ProgressOverlay, stage: unknown, dir: 'in' | 'out'): Pr
   return next;
 }
 
-function withWg(prev: ProgressOverlay, wgId: unknown, dir: 'in' | 'out'): ProgressOverlay {
+function withWgEnd(prev: ProgressOverlay, wgId: unknown): ProgressOverlay {
+  if (typeof wgId !== 'string') return prev;
+  // Clear both inProgressWg AND wgSubstage when a working group ends.
+  // Without clearing wgSubstage, SubStageNode would continue to see its
+  // substage as "live" until pipeline.complete fires (H5). On reconnect
+  // with seeded events, the stale substage would persist because no
+  // cleanup signal replays.
+  const nextSubstage = new Map(prev.wgSubstage);
+  nextSubstage.delete(wgId);
+  const nextWg = new Set(prev.inProgressWg);
+  nextWg.delete(wgId);
+  return { ...prev, inProgressWg: nextWg, wgSubstage: nextSubstage };
+}
+
+function withWgStart(prev: ProgressOverlay, wgId: unknown): ProgressOverlay {
   if (typeof wgId !== 'string') return prev;
   const next = { ...prev, inProgressWg: new Set(prev.inProgressWg) };
-  if (dir === 'in') next.inProgressWg.add(wgId);
-  else next.inProgressWg.delete(wgId);
+  next.inProgressWg.add(wgId);
   return next;
 }
 
@@ -53,21 +64,14 @@ function withSubstage(prev: ProgressOverlay, wgId: unknown, substage: string): P
   return next;
 }
 
-function withResearcher(prev: ProgressOverlay, wgId: unknown, activity: string): ProgressOverlay {
-  if (typeof wgId !== 'string') return prev;
-  const next = { ...prev, researcherActivity: new Map(prev.researcherActivity) };
-  next.researcherActivity.set(wgId, activity);
-  return next;
-}
-
 export function reduceProgress(prev: ProgressOverlay, env: BusEnvelope): ProgressOverlay {
   switch (env.name) {
     case 'pipeline.stage.start': return withStage(prev, env['stage'], 'in');
     case 'pipeline.stage.end':   return withStage(prev, env['stage'], 'out');
-    case 'wg.start':             return withWg(prev, env['territory_id'], 'in');
-    case 'wg.end':               return withWg(prev, env['territory_id'], 'out');
+    case 'wg.start':             return withWgStart(prev, env['territory_id']);
+    case 'wg.end':               return withWgEnd(prev, env['territory_id']);
     case 'wg.failed':
-      return withWg(prev, env['territory_id'], 'out');
+      return withWgEnd(prev, env['territory_id']);
     case 'wg.ideation.start':
     case 'wg.adversarial.start':
     case 'wg.alignment.start':
@@ -77,10 +81,6 @@ export function reduceProgress(prev: ProgressOverlay, env: BusEnvelope): Progres
       const substage = WG_SUBSTAGE_START[env.name];
       return substage ? withSubstage(prev, env['territory_id'], substage) : prev;
     }
-    case 'wg.researcher.web_search':
-      return withResearcher(prev, env['territory_id'], `search: ${env['query']}`);
-    case 'wg.researcher.web_fetch':
-      return withResearcher(prev, env['territory_id'], `fetch: ${env['url']}`);
     case 'pipeline.complete':
     case 'pipeline.failed':
       return emptyProgress();

@@ -9,7 +9,7 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { Box, Group, Switch, Text } from '@mantine/core';
-import type { InvestigationView } from '../../../inspect/types';
+import type { InvestigationView, Move } from '../../../inspect/types';
 import { layoutRing } from './forumLayout';
 import { personaColor } from '../../theme/personas';
 import { tokens, edgeColors } from '../../theme/tokens';
@@ -63,18 +63,30 @@ export function ForumGraph({
   const moveToNodeId = useMemo(() => {
     const m = new Map<string, string>();
     for (const node of view.forum.nodes) {
-      // Map originating move + every move in the debate whose surviving claim equals node.claim_id.
-      const debate = view.debates[node.working_group_id];
-      if (!debate) continue;
-      for (const claim of debate.surviving_claims) {
+      // Map originating move + every move in the debate/working-group whose
+      // surviving claim equals node.claim_id. v5 keeps surviving_claims on
+      // working_groups; v4 keeps them on debates.
+      const wg = view.working_groups?.[node.working_group_id];
+      const claims =
+        wg?.surviving_claims ?? view.debates[node.working_group_id]?.surviving_claims ?? [];
+      for (const claim of claims) {
         if (claim.claim_id === node.claim_id) m.set(claim.originating_move_id, node.node_id);
       }
     }
     return m;
-  }, [view.forum.nodes, view.debates]);
+  }, [view.forum.nodes, view.working_groups, view.debates]);
 
   const personaToHomeNode = useMemo(() => {
     const m = new Map<string, string>();
+    // v5: territory-keyed working_groups
+    for (const [tid, wg] of Object.entries(view.working_groups ?? {})) {
+      for (const p of wg.pair ?? []) {
+        if (m.has(p.id)) continue;
+        const anchor = pickClusterAnchor(view.forum.nodes, tid);
+        if (anchor) m.set(p.id, anchor);
+      }
+    }
+    // v4 fallback: sub-question-keyed debates
     for (const [sqId, debate] of Object.entries(view.debates)) {
       for (const p of debate.pair) {
         if (m.has(p.id)) continue;
@@ -83,7 +95,7 @@ export function ForumGraph({
       }
     }
     return m;
-  }, [view.debates, view.forum.nodes]);
+  }, [view.working_groups, view.debates, view.forum.nodes]);
 
   const rfEdges = useMemo<Edge[]>(() => {
     const edges: Edge[] = [];
@@ -124,8 +136,16 @@ export function ForumGraph({
     });
 
     if (showIntraCluster) {
-      for (const [, debate] of Object.entries(view.debates)) {
-        for (const move of debate.moves) {
+      // v5: iterate working_groups (territory-keyed); v4: iterate debates.
+      const moveGroups: Move[][] = [];
+      for (const wg of Object.values(view.working_groups ?? {})) {
+        moveGroups.push(wg.moves ?? []);
+      }
+      for (const debate of Object.values(view.debates)) {
+        moveGroups.push(debate.moves);
+      }
+      for (const moves of moveGroups) {
+        for (const move of moves) {
           if (!move.references_move_id) continue;
           if (move.type === 'Claim') continue;
           const fromNode = moveToNodeId.get(move.references_move_id);
@@ -147,6 +167,7 @@ export function ForumGraph({
     view.forum.contradiction_edges,
     view.cross_pollination,
     view.debates,
+    view.working_groups,
     personaToHomeNode,
     moveToNodeId,
     showIntraCluster,

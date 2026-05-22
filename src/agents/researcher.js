@@ -13,7 +13,7 @@ const {
 } = require('../anthropic');
 const { RESEARCHER_TOOL_BUDGET, RESEARCHER_TURN_BUDGET, RESEARCHER_REPORT_JSON_SCHEMA } = require('../moves');
 const { RESEARCHER } = require('./prompts');
-const { appendLog } = require('../storage');
+const { appendLog, safeSlug } = require('../storage');
 
 const EMIT_RESEARCHER_REPORT_TOOL = {
   name: 'emit_researcher_report',
@@ -93,7 +93,11 @@ async function runJointResearcher({
   bus,
 }) {
   const aqId = alignedQuestion.aligned_id;
-  const territoryId = territory.id || territory.territory_id;
+  // Slug the territory id so bus events use the same key the SPA/TUI look up
+  // by (wgSubstage map, dashboard reducer). working_group.js already passes a
+  // slugged id everywhere; safeSlug is idempotent so this also tolerates a raw
+  // territory object arriving via any other call site.
+  const territoryId = safeSlug(territory.id || territory.territory_id);
   const logFile = `pair-${territoryId}-researcher-${aqId}`;
 
   const tools = [
@@ -130,11 +134,12 @@ async function runJointResearcher({
     payload: { aligned_id: aqId, question: alignedQuestion.question },
   });
 
-  if (bus) bus.emit('wg.researcher.start', {
-    territory_id: territoryId,
-    aligned_id: aqId,
-    question: alignedQuestion.question,
-  });
+  // NOTE: wg.researcher.start is emitted by working_group.js (per spec §10.6
+  // 'wg.researcher.start × M'), one per aligned question, BEFORE this call.
+  // Emitting here would (a) have a different territory_id key than the SubStageNode
+  // expects (the wgSubstage Map is keyed by safeSlug(territoryId), set by every
+  // other substage from working_group.js) and (b) double-count researcherTotal
+  // in the TUI dashboard reducer.
 
   while (turnIndex < RESEARCHER_TURN_BUDGET) {
     const forceEmit =

@@ -1,7 +1,7 @@
 // NOTE: Despite the filename, these tests exercise the broker in isolation
-// (no Vite server, no HTTP). HTTP-level middleware behavior (body cap, SSE
-// headers, pipeline.complete → flushNow) is not covered here.
-// TODO: replace or supplement with a real HTTP-level test using node:http.
+// (no Vite server, no HTTP). HTTP-level middleware behavior (route order,
+// body cap, SSE Content-Type) is covered by integration_http.test.js, which
+// boots the real Vite dev server and drives it over fetch.
 'use strict';
 
 const test = require('node:test');

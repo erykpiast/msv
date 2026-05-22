@@ -4,7 +4,7 @@ import type { Node, NodeProps } from '@xyflow/react';
 import { StageNodeShell } from './StageNodeShell';
 import { useExpandedStages } from '../../hooks/useExpandedStages';
 import { useCanvasRoute } from '../../hooks/useHashRoute';
-import { useProgressOverlay } from '../../ViewContext';
+import { useIsStageInProgress } from '../../ViewContext';
 import { expandedWidth } from '../layout/pipelineLayout';
 import type { InvestigationView, StageStatus } from '../../../inspect/types';
 
@@ -15,8 +15,7 @@ export const CrossPollinationNode = memo(function CrossPollinationNode({ data }:
   const { view, status } = data;
   const { toggle, isExpanded } = useExpandedStages();
   const { route, setRoute } = useCanvasRoute();
-  const overlay = useProgressOverlay();
-  const isLive = overlay.inProgressStages.has('cross_pollination');
+  const isLive = useIsStageInProgress('cross_pollination');
   const exp = isExpanded('cross_pollination');
 
   const claimsWithReactions = useMemo(

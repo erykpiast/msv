@@ -33,6 +33,10 @@ function createViewRebuilder({
 
   let pending = null;
   let inFlight = null;
+  // A single follow-up rebuild promise shared by all callers that arrive
+  // while `inFlight` is already running. Ensures we never run more than one
+  // rebuild concurrently, even under concurrent flushNow calls.
+  let queued = null;
 
   async function rebuildOnce() {
     try {
@@ -48,19 +52,34 @@ function createViewRebuilder({
     }
   }
 
+  function startRebuild() {
+    inFlight = rebuildOnce().finally(() => { inFlight = null; });
+    return inFlight;
+  }
+
   function requestRebuild() {
-    if (pending) return;
+    if (pending || inFlight) return;
     pending = setTimeout(() => {
       pending = null;
-      inFlight = rebuildOnce().finally(() => { inFlight = null; });
+      startRebuild();
     }, DEBOUNCE_MS);
   }
 
   async function flushNow() {
     if (pending) { clearTimeout(pending); pending = null; }
-    if (inFlight) await inFlight;
-    inFlight = rebuildOnce().finally(() => { inFlight = null; });
-    return inFlight;
+    if (inFlight) {
+      // A rebuild is already running. Coalesce all concurrent flush callers
+      // onto a single follow-up rebuild that runs after the current one
+      // completes — guarantees no overlapping rebuilds.
+      if (!queued) {
+        queued = inFlight.then(() => {
+          queued = null;
+          return startRebuild();
+        });
+      }
+      return queued;
+    }
+    return startRebuild();
   }
 
   return { requestRebuild, flushNow };
