@@ -1,8 +1,5 @@
-import { Box, Group, Text } from '@mantine/core';
+import { Stack, Text } from '@mantine/core';
 import type { WorkingGroupView } from '../../../inspect/types';
-import { useCanvasRoute } from '../../hooks/useHashRoute';
-import { MoveThreadTree } from './MoveThreadTree';
-import { EvidencePanel } from './EvidencePanel';
 
 export function DebatePanel({
   wg,
@@ -13,46 +10,33 @@ export function DebatePanel({
   personaName: (id: string) => string;
   survivingIds: Set<string>;
 }) {
-  const { route, setRoute } = useCanvasRoute();
-
   const moves = wg.moves ?? [];
-
-  const selectedMoveId =
-    route.canvas === 'wg' && route.substage === 'debate' && route.leaf?.kind === 'move'
-      ? route.leaf.id
-      : null;
-
-  const onSelect = (moveId: string) => {
-    if (route.canvas === 'wg') {
-      setRoute({ ...route, leaf: { kind: 'move', id: moveId } });
-    }
-  };
-
-  const findings = (wg.researcher_reports ?? []).flatMap(r => r.findings);
 
   if (!moves.length) {
     return <Text c="dimmed" size="sm">No debate moves recorded.</Text>;
   }
 
+  const survivingCount = moves.reduce(
+    (acc, m) => (survivingIds.has(m.move_id) ? acc + 1 : acc),
+    0,
+  );
+  const personaIds = Array.from(new Set(moves.map((m) => m.by_persona_id)));
+  const personaList = personaIds.map((id) => personaName(id)).join(', ');
+
   return (
-    <Group align="flex-start" grow gap="md">
-      <Box style={{ flex: '0 0 58%', minWidth: 0 }}>
-        <MoveThreadTree
-          moves={moves}
-          personaName={personaName}
-          survivingIds={survivingIds}
-          selectedMoveId={selectedMoveId}
-          onSelect={onSelect}
-        />
-      </Box>
-      <Box style={{ flex: '0 0 42%', minWidth: 0 }}>
-        <EvidencePanel
-          selectedMoveId={selectedMoveId}
-          moves={wg.moves ?? []}
-          observations={wg.observations ?? []}
-          findings={findings}
-        />
-      </Box>
-    </Group>
+    <Stack gap="xs">
+      <Text size="sm">
+        {moves.length} debate {moves.length === 1 ? 'move' : 'moves'} recorded;{' '}
+        {survivingCount} survived.
+      </Text>
+      {personaIds.length > 0 ? (
+        <Text size="sm">Personas active: {personaList}.</Text>
+      ) : null}
+      <Text size="sm" c="dimmed">
+        Click the Debate stage card on the canvas to reveal the first step; each
+        subsequent click on the bottom-most move reveals the next step. Select any
+        step to see its details and evidence trail here.
+      </Text>
+    </Stack>
   );
 }
