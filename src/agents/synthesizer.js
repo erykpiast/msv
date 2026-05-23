@@ -313,16 +313,34 @@ async function runSynthesizer({ client, idea, model, budget, forum, personas, pa
   return {
     produced_at: new Date().toISOString(),
     report: payload.report,
-    headline_findings: payload.headline_findings,
-    open_tensions: payload.open_tensions,
-    question_landscape: payload.question_landscape || null,
+    headline_findings: coerceArray(payload.headline_findings) ?? [],
+    open_tensions: coerceArray(payload.open_tensions),
+    question_landscape: coerceArray(payload.question_landscape),
     dead_end_summary: payload.dead_end_summary || null,
-    sections: payload.sections || null,
-    tension_points: payload.tension_points || null,
-    key_references: payload.key_references || null,
-    next_pass_proposals: payload.next_pass_proposals || null,
+    sections: coerceArray(payload.sections),
+    tension_points: coerceArray(payload.tension_points),
+    key_references: coerceArray(payload.key_references),
+    next_pass_proposals: coerceArray(payload.next_pass_proposals),
     usage,
   };
+}
+
+// Sonnet occasionally emits an array-typed tool field as a JSON-encoded string
+// (most often when the response is near the max_tokens ceiling). Recover by
+// parsing the string; if the result isn't an array, fall back to null so the
+// renderer's `Array.isArray` guards take the empty path instead of crashing on
+// `.map`. Returns null for any non-array, non-parseable input.
+function coerceArray(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'string' && value.trim().startsWith('[')) {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) return parsed;
+    } catch {
+      // fall through to null
+    }
+  }
+  return null;
 }
 
 module.exports = {

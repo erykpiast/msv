@@ -22,9 +22,9 @@ function setRootForTesting(dir) {
 }
 
 const DEFAULT_BUDGET = {
-  max_executor_calls: 180,
-  max_total_tokens: 1_500_000,
-  max_researcher_tool_calls: 60,
+  max_executor_calls: 240,
+  max_total_tokens: 8_000_000,
+  max_researcher_tool_calls: 200,
   used_executor_calls: 0,
   used_total_tokens: 0,
   used_researcher_tool_calls: 0,

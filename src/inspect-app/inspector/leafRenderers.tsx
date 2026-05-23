@@ -34,12 +34,13 @@ function formatConfidence(n: unknown): string {
 
 function synthesisToMarkdown(s: NonNullable<SynthesisView>): string {
   const parts: string[] = [];
+  const hasSections = Array.isArray(s.sections) && s.sections.length > 0;
 
-  if (s.sections?.length) {
-    for (const section of s.sections) {
+  if (hasSections) {
+    for (const section of s.sections!) {
       parts.push(`## ${section.area_title}`);
       if (section.area_summary) parts.push(section.area_summary);
-      if (section.key_findings.length) {
+      if (Array.isArray(section.key_findings) && section.key_findings.length) {
         parts.push(
           section.key_findings
             .map((f) => `- _(${f.confidence})_ ${f.content}`)
@@ -51,42 +52,42 @@ function synthesisToMarkdown(s: NonNullable<SynthesisView>): string {
     parts.push(s.report);
   }
 
-  if (s.headline_findings.length && !s.sections?.length) {
+  if (Array.isArray(s.headline_findings) && s.headline_findings.length && !hasSections) {
     parts.push('## Headline findings');
     parts.push(s.headline_findings.map((f) => `- ${f}`).join('\n'));
   }
 
-  if (s.tension_points?.length) {
+  if (Array.isArray(s.tension_points) && s.tension_points.length) {
     parts.push('## Tension points');
     for (const tp of s.tension_points) {
       parts.push(`### ${tp.title}`);
       parts.push(tp.description);
-      if (tp.sides.length) {
+      if (Array.isArray(tp.sides) && tp.sides.length) {
         parts.push(tp.sides.map((side) => `- **${side.label}:** ${side.position}`).join('\n'));
       }
       if (tp.resolution) parts.push(`_Resolved:_ ${tp.resolution}`);
     }
   }
 
-  if (s.key_references?.length) {
+  if (Array.isArray(s.key_references) && s.key_references.length) {
     parts.push('## Most relevant references');
     s.key_references.forEach((ref, i) => {
       parts.push(`### ${i + 1}. [${ref.title}](${ref.url})`);
       if (ref.summary) parts.push(ref.summary);
-      if (ref.key_observations.length) {
+      if (Array.isArray(ref.key_observations) && ref.key_observations.length) {
         parts.push(ref.key_observations.map((obs) => `- ${obs}`).join('\n'));
       }
     });
   }
 
-  if (s.next_pass_proposals?.length) {
+  if (Array.isArray(s.next_pass_proposals) && s.next_pass_proposals.length) {
     parts.push('## Dig deeper — next pass proposals');
     s.next_pass_proposals.forEach((p, i) => {
       parts.push(`${i + 1}. **${p.topic}** — ${p.rationale}`);
     });
   }
 
-  if (s.question_landscape?.length && !s.sections?.length) {
+  if (Array.isArray(s.question_landscape) && s.question_landscape.length && !hasSections) {
     parts.push('## Question landscape');
     parts.push(
       s.question_landscape
@@ -391,7 +392,7 @@ export function renderLeaf(
       const s = view.synthesis;
       if (!s) return null;
 
-      const hasStructured = !!(s.sections?.length);
+      const hasStructured = Array.isArray(s.sections) && s.sections.length > 0;
 
       const body = hasStructured ? (
         <Stack gap="xl">
@@ -418,7 +419,7 @@ export function renderLeaf(
             </Stack>
           ))}
 
-          {s.tension_points && s.tension_points.length > 0 && (
+          {Array.isArray(s.tension_points) && s.tension_points.length > 0 && (
             <Stack gap="xs">
               <Text fw={700} size="md">Tension points</Text>
               {s.tension_points.map((tp, i) => (
@@ -438,7 +439,7 @@ export function renderLeaf(
             </Stack>
           )}
 
-          {s.key_references && s.key_references.length > 0 && (
+          {Array.isArray(s.key_references) && s.key_references.length > 0 && (
             <Stack gap="xs">
               <Text fw={700} size="md">Most relevant references</Text>
               {s.key_references.map((ref, i) => (
@@ -459,7 +460,7 @@ export function renderLeaf(
             </Stack>
           )}
 
-          {s.next_pass_proposals && s.next_pass_proposals.length > 0 && (
+          {Array.isArray(s.next_pass_proposals) && s.next_pass_proposals.length > 0 && (
             <Stack gap="xs">
               <Text fw={700} size="md">Dig deeper — next pass proposals</Text>
               <Text size="xs" c="dimmed">Topics worth exploring in a follow-up investigation.</Text>

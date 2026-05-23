@@ -240,19 +240,35 @@ function buildForum(loaderInput) {
   };
 }
 
+// Historical investigations may have a synthesis field where the model emitted
+// an array-typed value as a JSON-encoded string (truncation-induced). Heal on
+// read so the renderer's Array.isArray guards work uniformly.
+function coerceArray(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'string' && value.trim().startsWith('[')) {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) return parsed;
+    } catch {
+      // fall through
+    }
+  }
+  return undefined;
+}
+
 function buildSynthesis(loaderInput) {
   const synth = loaderInput.index?.investigation?.synthesis;
   if (!synth) return null;
   return {
     report: synth.report ?? '',
-    headline_findings: synth.headline_findings ?? [],
-    open_tensions: synth.open_tensions ?? [],
-    question_landscape: synth.question_landscape ?? undefined,
+    headline_findings: coerceArray(synth.headline_findings) ?? [],
+    open_tensions: coerceArray(synth.open_tensions) ?? [],
+    question_landscape: coerceArray(synth.question_landscape),
     dead_end_summary: synth.dead_end_summary ?? undefined,
-    sections: synth.sections ?? undefined,
-    tension_points: synth.tension_points ?? undefined,
-    key_references: synth.key_references ?? undefined,
-    next_pass_proposals: synth.next_pass_proposals ?? undefined,
+    sections: coerceArray(synth.sections),
+    tension_points: coerceArray(synth.tension_points),
+    key_references: coerceArray(synth.key_references),
+    next_pass_proposals: coerceArray(synth.next_pass_proposals),
   };
 }
 
