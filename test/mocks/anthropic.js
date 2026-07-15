@@ -249,6 +249,7 @@ function createMockClient(options = {}) {
   let totalCalls = 0;
   const callLog = [];
   let failSpec = options.fail || null;
+  const truncateSynthesis = !!options.truncateSynthesis;
 
   const client = {
     /** Total API call count (create + stream combined). */
@@ -300,9 +301,17 @@ function createMockClient(options = {}) {
               throw buildFailError(failSpec, tool, totalCalls);
             }
 
-            const input = TOOL_INPUTS[tool];
+            let input = TOOL_INPUTS[tool];
             if (input == null) {
               throw new Error(`Mock stream(): tool=${tool} has no input fixture (input=${input}).`);
+            }
+            // Simulate the max_tokens truncation bug: the structured payload
+            // arrives with the trailing fields (report, key_references,
+            // next_pass_proposals) missing, same as a real truncated tool call.
+            const isSynthesisTruncation = truncateSynthesis && tool === 'emit_synthesis';
+            if (isSynthesisTruncation) {
+              const { report, key_references, next_pass_proposals, ...partial } = input;
+              input = partial;
             }
             const block = {
               type: 'tool_use',
@@ -316,7 +325,7 @@ function createMockClient(options = {}) {
 
             return {
               content: [block],
-              stop_reason: 'tool_use',
+              stop_reason: isSynthesisTruncation ? 'max_tokens' : 'tool_use',
               usage: MOCK_USAGE,
             };
           },

@@ -313,6 +313,7 @@ async function runJointResearcher({
       maxTokens: 4000,
       budget,
       timeoutMs: RESEARCHER_TIMEOUT_MS,
+      thinking: { type: 'adaptive' },
     });
 
     // Count server-side tool invocations (web_search, web_fetch) toward researcher budget.

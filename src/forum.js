@@ -125,6 +125,7 @@ async function judgeContradiction({ client, model, budget, idea, a, b }) {
     client,
     model,
     budget,
+    thinking: { type: 'adaptive' },
     system: CONTRADICTION_SYSTEM,
     maxTokens: 400,
     messages: [

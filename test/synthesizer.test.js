@@ -133,11 +133,15 @@ test('runSynthesizer falls back to null for optional structured fields when abse
   };
   const client = {
     messages: {
-      async create() {
+      stream() {
         return {
-          stop_reason: 'tool_use',
-          content: [{ type: 'tool_use', id: 'mock', name: 'emit_synthesis', input: minimalPayload }],
-          usage: { input_tokens: 10, output_tokens: 10 },
+          async finalMessage() {
+            return {
+              stop_reason: 'tool_use',
+              content: [{ type: 'tool_use', id: 'mock', name: 'emit_synthesis', input: minimalPayload }],
+              usage: { input_tokens: 10, output_tokens: 10 },
+            };
+          },
         };
       },
     },
@@ -167,25 +171,29 @@ test('runSynthesizer passes timeoutMs: 180_000 to the underlying API call', asyn
   let capturedTimeout;
   const client = {
     messages: {
-      async create(_params, opts) {
+      stream(_params, opts) {
         capturedTimeout = opts?.timeout;
         return {
-          stop_reason: 'tool_use',
-          content: [{
-            type: 'tool_use',
-            id: 'mock',
-            name: 'emit_synthesis',
-            input: {
-              report: 'Mock. '.repeat(60),
-              headline_findings: ['A.', 'B.', 'C.'],
-              open_tensions: [],
-              sections: [
-                { area_title: 'A', area_summary: 's', key_findings: [{ content: 'c', confidence: 'high' }] },
-                { area_title: 'B', area_summary: 's', key_findings: [{ content: 'c', confidence: 'high' }] },
-              ],
-            },
-          }],
-          usage: { input_tokens: 10, output_tokens: 10 },
+          async finalMessage() {
+            return {
+              stop_reason: 'tool_use',
+              content: [{
+                type: 'tool_use',
+                id: 'mock',
+                name: 'emit_synthesis',
+                input: {
+                  report: 'Mock. '.repeat(60),
+                  headline_findings: ['A.', 'B.', 'C.'],
+                  open_tensions: [],
+                  sections: [
+                    { area_title: 'A', area_summary: 's', key_findings: [{ content: 'c', confidence: 'high' }] },
+                    { area_title: 'B', area_summary: 's', key_findings: [{ content: 'c', confidence: 'high' }] },
+                  ],
+                },
+              }],
+              usage: { input_tokens: 10, output_tokens: 10 },
+            };
+          },
         };
       },
     },
@@ -196,6 +204,104 @@ test('runSynthesizer passes timeoutMs: 180_000 to the underlying API call', asyn
   await runSynthesizer({ client, bus, ...inputs });
 
   assert.equal(capturedTimeout, 180_000);
+});
+
+test('runSynthesizer returns truncated: true and partial fields on stop_reason: max_tokens, without throwing', async () => {
+  // Simulates the real bug this spec fixes: the tool call hits max_tokens
+  // partway through emitting the structured payload, so report/key_references/
+  // next_pass_proposals never arrive.
+  const partialPayload = {
+    headline_findings: ['Only headline made it in.'],
+    sections: [
+      {
+        area_title: 'Area A',
+        area_summary: 'Framing A.',
+        key_findings: [{ content: 'Finding A1.', confidence: 'medium' }],
+      },
+      {
+        area_title: 'Area B',
+        area_summary: 'Framing B.',
+        key_findings: [{ content: 'Finding B1.', confidence: 'low' }],
+      },
+    ],
+    // report, key_references, next_pass_proposals, open_tensions: cut off by max_tokens.
+  };
+  const client = {
+    messages: {
+      stream() {
+        return {
+          async finalMessage() {
+            return {
+              stop_reason: 'max_tokens',
+              content: [{ type: 'tool_use', id: 'mock', name: 'emit_synthesis', input: partialPayload }],
+              usage: { input_tokens: 10, output_tokens: 32000 },
+            };
+          },
+        };
+      },
+    },
+  };
+  const bus = makeRecordingBus();
+  const inputs = buildSynthesizerInputs();
+
+  const result = await runSynthesizer({ client, bus, ...inputs });
+
+  assert.equal(result.truncated, true);
+  assert.deepEqual(result.headline_findings, ['Only headline made it in.']);
+  assert.ok(Array.isArray(result.sections));
+  assert.equal(result.report, undefined);
+  assert.equal(result.key_references, null);
+  assert.equal(result.next_pass_proposals, null);
+
+  const done = bus.events.find((e) => e.name === 'synthesizer.done');
+  assert.equal(done.payload.truncated, true);
+});
+
+test('runSynthesizer returns truncated: true when max_tokens hits before the tool block is emitted', async () => {
+  // Harsher truncation than the mid-payload case: the model runs out of output
+  // tokens before emitting the emit_synthesis tool_use block at all, so the
+  // streamed final message carries no tool_use content. runStructuredStreamingCall
+  // must not throw its "Expected forced tool call" error here — it must return
+  // toolUse: null so runSynthesizer surfaces this as a resumable truncation.
+  const client = {
+    messages: {
+      stream() {
+        return {
+          async finalMessage() {
+            return {
+              stop_reason: 'max_tokens',
+              content: [{ type: 'text', text: 'Partial thinking, no tool call yet' }],
+              usage: { input_tokens: 10, output_tokens: 32000 },
+            };
+          },
+        };
+      },
+    },
+  };
+  const bus = makeRecordingBus();
+  const inputs = buildSynthesizerInputs();
+
+  const result = await runSynthesizer({ client, bus, ...inputs });
+
+  assert.equal(result.truncated, true);
+  assert.equal(result.report, undefined);
+  assert.deepEqual(result.headline_findings, []);
+  assert.equal(result.sections, null);
+  assert.equal(result.key_references, null);
+  assert.equal(result.next_pass_proposals, null);
+
+  const done = bus.events.find((e) => e.name === 'synthesizer.done');
+  assert.equal(done.payload.truncated, true);
+});
+
+test('runSynthesizer reports truncated: falsy on a normal completion', async () => {
+  const client = createMockClient();
+  const bus = makeRecordingBus();
+  const inputs = buildSynthesizerInputs();
+
+  const result = await runSynthesizer({ client, bus, ...inputs });
+
+  assert.ok(!result.truncated);
 });
 
 // ---------------------------------------------------------------------------

@@ -221,6 +221,7 @@ async function runStructuredCall({
   maxTokens = 2400,
   budget,
   timeoutMs = SDK_REQUEST_TIMEOUT_MS,
+  thinking,
 }) {
   if (!client) throw new Error('client is required');
   if (!Array.isArray(messages) || messages.length === 0) {
@@ -234,6 +235,9 @@ async function runStructuredCall({
     messages,
     tools,
   };
+  if (thinking) {
+    params.thinking = thinking;
+  }
   if (forceTool) {
     params.tool_choice = { type: 'tool', name: forceTool };
   }
@@ -268,6 +272,87 @@ async function runStructuredCall({
   return { response, usage, web_searches };
 }
 
+/**
+ * Streaming counterpart to runStructuredCall, for calls that need genuine
+ * max_tokens headroom (the non-streaming SDK path times out well before a
+ * large adaptive-thinking + structured-output response can complete). Mirrors
+ * runStructuredCall's contract (same params, same { response, toolUse, usage,
+ * web_searches } shape) so callers can swap between the two with minimal
+ * surrounding change. Scoped to call sites that actually need streaming —
+ * runStructuredCall remains the default for research/debate/working-group calls.
+ */
+async function runStructuredStreamingCall({
+  client,
+  system,
+  messages,
+  tools = [],
+  forceTool,
+  model = MODEL,
+  maxTokens = 2400,
+  budget,
+  timeoutMs = SDK_REQUEST_TIMEOUT_MS,
+  thinking,
+  effort,
+}) {
+  if (!client) throw new Error('client is required');
+  if (!Array.isArray(messages) || messages.length === 0) {
+    throw new Error('messages must be a non-empty array');
+  }
+
+  const params = {
+    model,
+    system,
+    max_tokens: maxTokens,
+    messages,
+    tools,
+  };
+  if (thinking) {
+    params.thinking = thinking;
+  }
+  if (effort) {
+    params.output_config = { ...(params.output_config || {}), effort };
+  }
+  if (forceTool) {
+    params.tool_choice = { type: 'tool', name: forceTool };
+  }
+
+  const perAttemptTimeoutMs = timeoutMs + ATTEMPT_BACKSTOP_BUFFER_MS;
+  const wallClockMaxMs = timeoutMs + 30_000;
+  const response = await apiQueue.enqueue(
+    (signal) => client.messages.stream(params, { timeout: timeoutMs, signal }).finalMessage(),
+    { perAttemptTimeoutMs, wallClockMaxMs }
+  );
+  const usage = tokenUsage(response);
+  if (budget) {
+    budget.used_executor_calls = (budget.used_executor_calls || 0) + 1;
+    budget.used_total_tokens = (budget.used_total_tokens || 0) + usage.total;
+  }
+
+  const web_searches = extractWebSearches(response);
+
+  if (forceTool) {
+    const toolUse = extractToolUse(response, forceTool);
+    if (!toolUse) {
+      // A forced tool that never appeared because the model ran out of output
+      // tokens is a truncation, not a contract violation: the call ran, it just
+      // hit max_tokens before emitting the tool_use block at all. Return
+      // toolUse: null so the caller can detect stop_reason === 'max_tokens' and
+      // treat it as a first-class, resumable partial result — the same way it
+      // handles a tool block that arrives truncated mid-payload. Any other
+      // missing-tool stop_reason is still a genuine contract violation.
+      if (response.stop_reason === 'max_tokens') {
+        return { response, toolUse: null, usage, web_searches };
+      }
+      throw new Error(
+        `Expected forced tool call \`${forceTool}\`; got stop_reason=${response.stop_reason}`
+      );
+    }
+    return { response, toolUse, usage, web_searches };
+  }
+
+  return { response, usage, web_searches };
+}
+
 function webFetchTool({ maxUses = 6 } = {}) {
   return {
     type: 'web_fetch_20250910',
@@ -291,5 +376,6 @@ module.exports = {
   runWithWebSearchRetry,
   tokenUsage,
   runStructuredCall,
+  runStructuredStreamingCall,
   getStats: apiQueue.getStats,
 };

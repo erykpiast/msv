@@ -83,6 +83,7 @@ async function runCoordinatorInitial({ client, idea, model, budget, personas, bu
     client,
     model,
     budget,
+    thinking: { type: 'adaptive' },
     system: COORDINATOR_TERRITORIES,
     maxTokens: 2400,
     messages: [

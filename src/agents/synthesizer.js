@@ -1,6 +1,6 @@
 'use strict';
 
-const { runStructuredCall } = require('../anthropic');
+const { runStructuredStreamingCall } = require('../anthropic');
 const { SYNTHESIZER } = require('./prompts');
 const { appendLog } = require('../storage');
 
@@ -257,16 +257,17 @@ async function runSynthesizer({ client, idea, model, budget, forum, personas, pa
     },
   });
 
-  const { response, toolUse, usage } = await runStructuredCall({
+  const { response, toolUse, usage } = await runStructuredStreamingCall({
     client,
     model,
     budget,
     system: SYNTHESIZER,
-    // 10000 is a safety net, not a budget. With the structured fields emitted
-    // first and the prose `report` capped at ~400 words / 3500 chars, a typical
-    // synthesis lands well under this. We previously ran at 6500 and saw
-    // stop_reason: 'max_tokens' truncate the structured payload silently.
-    maxTokens: 10_000,
+    thinking: { type: 'adaptive' },
+    effort: 'xhigh',
+    // Streamed so the SDK's non-streaming timeout ceiling doesn't cap how high
+    // maxTokens can go. Raised from 10,000 after observing stop_reason:
+    // 'max_tokens' silently truncate the structured payload at that ceiling.
+    maxTokens: 32_000,
     messages: [
       {
         role: 'user',
@@ -289,12 +290,18 @@ async function runSynthesizer({ client, idea, model, budget, forum, personas, pa
     timeoutMs: 180_000,
   });
 
-  const payload = toolUse.input;
+  // toolUse is null when the call hit max_tokens before emitting the
+  // emit_synthesis block at all; fall back to an empty payload so the
+  // coerceArray/|| null fallbacks below produce a well-formed truncated result
+  // rather than crashing on `.input` of null.
+  const payload = toolUse?.input || {};
+  const truncated = response.stop_reason === 'max_tokens';
 
   await appendLog(idea.id, 'synthesizer', {
     kind: 'response',
     payload: {
       stop_reason: response.stop_reason,
+      truncated,
       usage,
       headline_count: (payload.headline_findings || []).length,
       report_chars: (payload.report || '').length,
@@ -308,6 +315,7 @@ async function runSynthesizer({ client, idea, model, budget, forum, personas, pa
     has_question_landscape: !!(payload.question_landscape),
     has_dead_end_summary: !!(payload.dead_end_summary),
     section_count: (payload.sections || []).length,
+    truncated,
   });
 
   return {
@@ -322,6 +330,7 @@ async function runSynthesizer({ client, idea, model, budget, forum, personas, pa
     key_references: coerceArray(payload.key_references),
     next_pass_proposals: coerceArray(payload.next_pass_proposals),
     usage,
+    truncated,
   };
 }
 

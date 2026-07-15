@@ -503,11 +503,27 @@ async function runPipeline(idea, client, { cancellationToken, bus } = {}) {
       tension_points: synthesis.tension_points || null,
       key_references: synthesis.key_references || null,
       next_pass_proposals: synthesis.next_pass_proposals || null,
+      truncated: !!synthesis.truncated,
     };
-    inv.completed_at = new Date().toISOString();
-    inv.progress.current_stage = 'complete';
-    inv.last_failure = null;
-    idea.status = 'ready';
+    if (synthesis.truncated) {
+      // Leave current_stage at '7_synthesis' and status off 'ready' so the
+      // existing resume logic (planResume: idea.status !== 'ready' → resume)
+      // re-enters just this stage on the next run, instead of re-paying for
+      // research/debate/forum work that already succeeded.
+      inv.last_failure = {
+        reason: 'synthesizer_truncated',
+        stage: '7_synthesis',
+        territory_id: null,
+        sub_stage: null,
+        error_message: 'Synthesizer response was truncated at max_tokens; partial synthesis persisted.',
+        occurred_at: new Date().toISOString(),
+      };
+    } else {
+      inv.completed_at = new Date().toISOString();
+      inv.progress.current_stage = 'complete';
+      inv.last_failure = null;
+      idea.status = 'ready';
+    }
     if (bus) bus.emit('pipeline.stage.end', { stage: 'synthesis', summary: {} });
     await checkpoint(idea, cancellationToken);
   }

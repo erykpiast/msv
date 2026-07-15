@@ -170,6 +170,7 @@ async function emitOneMove({
     client,
     model,
     budget,
+    thinking: { type: 'adaptive' },
     system,
     maxTokens: 1400,
     messages,
@@ -450,6 +451,7 @@ async function runCrossPollinationReaction({
       client,
       model,
       budget,
+      thinking: { type: 'adaptive' },
       system,
       maxTokens: 1200,
       messages: [
@@ -594,6 +596,7 @@ async function runIdeation({ client, idea, model, budget, territory, persona }) 
     client,
     model,
     budget,
+    thinking: { type: 'adaptive' },
     system,
     maxTokens: 3000,
     messages: [
@@ -643,6 +646,7 @@ async function runAdversarialMark({
     client,
     model,
     budget,
+    thinking: { type: 'adaptive' },
     system,
     maxTokens: 2000,
     messages: [
@@ -700,6 +704,7 @@ async function runAlignmentMove({
     client,
     model,
     budget,
+    thinking: { type: 'adaptive' },
     system,
     maxTokens: 1200,
     messages: [
@@ -748,6 +753,7 @@ async function runObservation({
     client,
     model,
     budget,
+    thinking: { type: 'adaptive' },
     system,
     maxTokens: 2000,
     messages: [
@@ -823,6 +829,7 @@ async function runDebateMove({
     client,
     model,
     budget,
+    thinking: { type: 'adaptive' },
     system,
     maxTokens: 1400,
     messages: [{ role: 'user', content: userContent }],
