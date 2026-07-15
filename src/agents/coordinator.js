@@ -69,6 +69,17 @@ function renderPairScores(personas) {
   return rows.join('\n');
 }
 
+// Returns true when the tool call is unusable because it was cut off mid-JSON:
+// either the forced tool never made it into the response (toolUse === null),
+// or it did appear but its required `territories` array is missing/malformed
+// — the same "truncated but present" case researcher.js's normalizeReport
+// guards against for `findings`.
+function isUnrecoverableTruncation({ toolUse, truncated }) {
+  if (!truncated) return false;
+  if (!toolUse) return true;
+  return !Array.isArray(toolUse.input && toolUse.input.territories);
+}
+
 async function runCoordinatorInitial({ client, idea, model, budget, personas, bus }) {
   const personaSummary = renderPersonaSummary(personas);
   const pairScores = renderPairScores(personas);
@@ -79,22 +90,71 @@ async function runCoordinatorInitial({ client, idea, model, budget, personas, bu
     payload: { persona_ids: personas.map((p) => p.id) },
   });
 
-  const { response, toolUse, usage } = await runStructuredCall({
+  const messages = [
+    {
+      role: 'user',
+      content: `Topic: ${idea.raw_capture}\n\nPersona roster:\n${personaSummary}\n\nPair-distinctness scores (higher = more tension):\n${pairScores}\n\nDecompose the topic into 4–5 broad territories and assign persona pairs. Invoke emit_territories.`,
+    },
+  ];
+
+  const callArgs = {
     client,
     model,
     budget,
     thinking: { type: 'adaptive' },
     system: COORDINATOR_TERRITORIES,
-    maxTokens: 2400,
-    messages: [
-      {
-        role: 'user',
-        content: `Topic: ${idea.raw_capture}\n\nPersona roster:\n${personaSummary}\n\nPair-distinctness scores (higher = more tension):\n${pairScores}\n\nDecompose the topic into 4–5 broad territories and assign persona pairs. Invoke emit_territories.`,
-      },
-    ],
+    // Bumped from 2400. This call forces a single small structured emit (3-5
+    // territories, each a short kebab-case name + 1-2 sentence description +
+    // a 2-id pair — nowhere near researcher.js's findings arrays), but it
+    // shares the same adaptive-thinking + forced-tool shape that caused
+    // silent truncation at persona.js's 1200-token ceiling in production:
+    // adaptive thinking competes with the final JSON for the same max_tokens
+    // budget, so a tight ceiling can starve the emit even when the emitted
+    // payload itself is small. 4000 gives that thinking headroom room without
+    // reaching for researcher/synthesizer-sized ceilings this schema doesn't need.
+    maxTokens: 4000,
+    messages,
     tools: [EMIT_TERRITORIES_TOOL],
     forceTool: 'emit_territories',
-  });
+  };
+
+  let result = await runStructuredCall(callArgs);
+
+  // Recoverable max_tokens truncation: give the model exactly one more shot
+  // at a shorter, complete emit before treating this early, high-leverage
+  // decision as lost. This is a cheap, single-shot call (unlike researcher's
+  // multi-turn loop), so a retry here is low-cost; if it also truncates or
+  // comes back malformed, we fall through and let the error propagate to
+  // run.js, which already classifies/checkpoints thrown errors for resume
+  // (see src/commands/run.js's per-idea try/catch) rather than silently
+  // continuing with partial/garbage territories.
+  if (isUnrecoverableTruncation(result)) {
+    await appendLog(idea.id, 'coordinator', {
+      kind: 'truncation_retry',
+      payload: {
+        stop_reason: result.response.stop_reason,
+        reason: result.toolUse ? 'territories_missing_or_malformed' : 'tool_use_missing',
+      },
+    });
+    const retryMessages = [
+      ...messages,
+      { role: 'assistant', content: (result.response.content || []) },
+      {
+        role: 'user',
+        content:
+          'Your previous emit_territories call was cut off by the max_tokens limit before it could finish. Re-emit it now via emit_territories — keep it to 3-4 territories with concise descriptions so it fits within budget this time.',
+      },
+    ];
+    result = await runStructuredCall({ ...callArgs, messages: retryMessages });
+  }
+
+  const { response, toolUse, usage } = result;
+
+  if (isUnrecoverableTruncation(result)) {
+    throw new Error(
+      `Coordinator emit_territories truncated after retry; got stop_reason=${response.stop_reason}`
+    );
+  }
 
   const territories = (toolUse.input.territories || [])
     .map((t, index) => {
@@ -139,4 +199,5 @@ async function runCoordinatorInitial({ client, idea, model, budget, personas, bu
 
 module.exports = {
   runCoordinatorInitial,
+  isUnrecoverableTruncation,
 };

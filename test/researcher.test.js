@@ -11,7 +11,22 @@ const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'researcher-test-'));
 process.env.MSV_ROOT = path.join(tmpHome, '.msv');
 fs.mkdirSync(path.join(process.env.MSV_ROOT, 'ideas', 'i_test', 'logs'), { recursive: true });
 
-const { normalizeReport, coerceArray } = require('../src/agents/researcher');
+// Stub out grounding's network-fetching validator BEFORE researcher.js is
+// first required: researcher.js destructures `validateFindingGrounding` at
+// module-load time, so the override must land on the shared module.exports
+// object before that require executes. Tests below only exercise the
+// truncation-retry loop in runJointResearcher, not the grounding pass itself
+// (which is covered separately), so a permissive always-ok stub keeps them
+// hermetic (no real HTTP calls) without hiding a runtime dependency.
+const grounding = require('../src/grounding');
+grounding.validateFindingGrounding = async () => ({
+  ok: true,
+  errors: [],
+  warnings: [],
+  meta: {},
+});
+
+const { normalizeReport, coerceArray, runJointResearcher } = require('../src/agents/researcher');
 const { readLog } = require('../src/storage');
 
 const LOG_FILE = 'pair-t_test-researcher-aq_test';
@@ -145,4 +160,135 @@ test('normalizeReport: rawInput=null/undefined produces a clean dead_end report'
     assert.deepEqual(result.search_trace, []);
     assert.equal(result.outcome, 'dead_end');
   }
+});
+
+// ---------------------------------------------------------------------------
+// runJointResearcher — maxTokens bump + max_tokens truncation retry
+// ---------------------------------------------------------------------------
+
+function makeIdea() {
+  return { id: 'i_test' };
+}
+
+function makeTerritory() {
+  return { id: 't_test', name: 'Test Territory', description: 'A territory for testing.' };
+}
+
+function makeAlignedQuestion(suffix = '001') {
+  return { aligned_id: `aq_${suffix}`, question: `Test question ${suffix}?` };
+}
+
+// Sequences a fixed list of `messages.create` responses; the last entry is
+// reused for any call beyond the list length so tests don't need to predict
+// exactly how many turns the loop takes.
+function makeSequencedClient(responses) {
+  const capturedParams = [];
+  let call = 0;
+  return {
+    capturedParams,
+    messages: {
+      create: async (params) => {
+        capturedParams.push(params);
+        const idx = Math.min(call, responses.length - 1);
+        call += 1;
+        return responses[idx];
+      },
+    },
+  };
+}
+
+function truncatedMalformedResponse({ outputTokens = 6000 } = {}) {
+  return {
+    stop_reason: 'max_tokens',
+    content: [
+      {
+        type: 'tool_use',
+        id: 'mock_report',
+        name: 'emit_researcher_report',
+        // Cut off mid-JSON: findings never closed out as a valid array.
+        input: { outcome: 'useful', findings: 'x'.repeat(500), search_trace: [] },
+      },
+    ],
+    usage: { input_tokens: 10, output_tokens: outputTokens },
+  };
+}
+
+function wellFormedResponse() {
+  return {
+    stop_reason: 'tool_use',
+    content: [
+      {
+        type: 'tool_use',
+        id: 'mock_report',
+        name: 'emit_researcher_report',
+        input: {
+          outcome: 'useful',
+          findings: [
+            {
+              summary: 'Recovered finding.',
+              source_url: 'https://example.com/a',
+              source_quote: 'q',
+              confidence_in_source: 7,
+            },
+          ],
+          search_trace: ['query one'],
+        },
+      },
+    ],
+    usage: { input_tokens: 10, output_tokens: 800 },
+  };
+}
+
+test('runJointResearcher: passes maxTokens 8000 to the underlying call', async () => {
+  const client = makeSequencedClient([wellFormedResponse()]);
+
+  await runJointResearcher({
+    client,
+    idea: makeIdea(),
+    territory: makeTerritory(),
+    alignedQuestion: makeAlignedQuestion('maxtok'),
+  });
+
+  assert.equal(client.capturedParams[0].max_tokens, 8000);
+});
+
+test('runJointResearcher: a truncated + malformed report triggers a retry instead of an immediate dead_end', async () => {
+  const client = makeSequencedClient([truncatedMalformedResponse(), wellFormedResponse()]);
+
+  const result = await runJointResearcher({
+    client,
+    idea: makeIdea(),
+    territory: makeTerritory(),
+    alignedQuestion: makeAlignedQuestion('retry_success'),
+  });
+
+  // The bug this fixes: without the retry, this would come back dead_end with
+  // 0 findings even though the model had already done real research.
+  assert.equal(client.capturedParams.length, 2, 'the model must be re-prompted exactly once');
+  assert.equal(result.outcome, 'useful');
+  assert.equal(result.findings.length, 1);
+  assert.equal(result.findings[0].summary, 'Recovered finding.');
+
+  const entries = await readLog('i_test', 'pair-t_test-researcher-aq_retry_success');
+  const retryLog = entries.find((e) => e.kind === 'truncation_retry');
+  assert.ok(retryLog, 'a truncation_retry log entry must be written');
+  assert.equal(retryLog.payload.reason, 'findings_unrecoverable');
+});
+
+test('runJointResearcher: exhausting the retry (still truncated/malformed) falls back to dead_end without crashing', async () => {
+  const client = makeSequencedClient([truncatedMalformedResponse(), truncatedMalformedResponse()]);
+
+  const result = await runJointResearcher({
+    client,
+    idea: makeIdea(),
+    territory: makeTerritory(),
+    alignedQuestion: makeAlignedQuestion('retry_exhausted'),
+  });
+
+  assert.equal(result.outcome, 'dead_end');
+  assert.deepEqual(result.findings, []);
+
+  const entries = await readLog('i_test', 'pair-t_test-researcher-aq_retry_exhausted');
+  const retryLogs = entries.filter((e) => e.kind === 'truncation_retry');
+  assert.equal(retryLogs.length, 1, 'only one retry attempt is made, even when it also fails');
 });

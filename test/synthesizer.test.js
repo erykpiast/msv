@@ -164,10 +164,11 @@ test('runSynthesizer falls back to null for optional structured fields when abse
   assert.ok(Array.isArray(result.sections));
 });
 
-test('runSynthesizer passes timeoutMs: 180_000 to the underlying API call', async () => {
-  // The synthesizer overrides the default SDK timeout because it emits a
-  // ~6.5k-token tool call that routinely runs 60–120s. Asserting the value is
-  // forwarded protects against an accidental refactor that drops the override.
+test('runSynthesizer passes timeoutMs: 600_000 to the underlying API call', async () => {
+  // The synthesizer overrides the default SDK timeout because it emits up to a
+  // 32k-token tool call with xhigh effort + adaptive thinking. Asserting the
+  // value is forwarded protects against an accidental refactor that drops the
+  // override.
   let capturedTimeout;
   const client = {
     messages: {
@@ -203,7 +204,7 @@ test('runSynthesizer passes timeoutMs: 180_000 to the underlying API call', asyn
 
   await runSynthesizer({ client, bus, ...inputs });
 
-  assert.equal(capturedTimeout, 180_000);
+  assert.equal(capturedTimeout, 600_000);
 });
 
 test('runSynthesizer returns truncated: true and partial fields on stop_reason: max_tokens, without throwing', async () => {

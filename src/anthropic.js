@@ -197,91 +197,32 @@ function tokenUsage(response) {
 }
 
 /**
- * Run a single call that may use server-side tools (web_search) and is required
- * to terminate by invoking a single forced client tool. The loop drives the
- * web-search/server-tool resolution that the API handles internally — server
- * tools don't need client handling; we just keep stepping until the model emits
- * the forced tool call or hits stop_reason: end_turn.
+ * Shared core for runStructuredCall / runStructuredStreamingCall. Runs a call
+ * that may use server-side tools (web_search) and is optionally required to
+ * terminate by invoking a single forced client tool. Server tools don't need
+ * client handling; the API resolves them transparently.
  *
- * If `forceTool` is provided, we set tool_choice to force that tool. The first
- * occurrence of that tool's input is returned. Server tools (web_search) are
- * still permitted; the API resolves them transparently.
+ * Every call site gets the same truncation contract, regardless of transport:
+ *   - `truncated` is true whenever stop_reason === 'max_tokens'.
+ *   - If `forceTool` was set and the tool never appeared in the response
+ *     because generation was cut off first, `toolUse` is null rather than
+ *     throwing — a max_tokens cutoff is a partial result, not a contract
+ *     violation, and callers should treat it as first-class, resumable/
+ *     retryable state (checkpoint what's there, retry, or fall back)
+ *     instead of the pipeline silently losing the work already done.
+ *   - `toolUse` can also be non-null but truncated: the tool_use block
+ *     appeared but its `input` may be missing fields the model ran out of
+ *     room to emit. `truncated` tells the caller to validate defensively
+ *     rather than trust the schema blindly (see researcher.js's
+ *     normalizeReport for the pattern).
+ *   - Any other missing-tool stop_reason (e.g. end_turn) is still a genuine
+ *     contract violation and throws.
  *
  * Do NOT pass `budget` if this call is wrapped in `runWithWebSearchRetry` and
  * the caller's `onAttempt` already increments the budget — that would double-
  * count tokens and executor calls.
  */
-async function runStructuredCall({
-  client,
-  system,
-  messages,
-  tools = [],
-  forceTool,
-  model = MODEL,
-  maxTokens = 2400,
-  budget,
-  timeoutMs = SDK_REQUEST_TIMEOUT_MS,
-  thinking,
-}) {
-  if (!client) throw new Error('client is required');
-  if (!Array.isArray(messages) || messages.length === 0) {
-    throw new Error('messages must be a non-empty array');
-  }
-
-  const params = {
-    model,
-    system,
-    max_tokens: maxTokens,
-    messages,
-    tools,
-  };
-  if (thinking) {
-    params.thinking = thinking;
-  }
-  if (forceTool) {
-    params.tool_choice = { type: 'tool', name: forceTool };
-  }
-
-  // Per-request SDK timeout overrides the client default. The queue-level
-  // per-attempt backstop and wall-clock cap track it so a longer SDK timeout
-  // isn't strangled by a shorter queue cap.
-  const perAttemptTimeoutMs = timeoutMs + ATTEMPT_BACKSTOP_BUFFER_MS;
-  const wallClockMaxMs = timeoutMs + 30_000;
-  const response = await apiQueue.enqueue(
-    (signal) => client.messages.create(params, { timeout: timeoutMs, signal }),
-    { perAttemptTimeoutMs, wallClockMaxMs }
-  );
-  const usage = tokenUsage(response);
-  if (budget) {
-    budget.used_executor_calls = (budget.used_executor_calls || 0) + 1;
-    budget.used_total_tokens = (budget.used_total_tokens || 0) + usage.total;
-  }
-
-  const web_searches = extractWebSearches(response);
-
-  if (forceTool) {
-    const toolUse = extractToolUse(response, forceTool);
-    if (!toolUse) {
-      throw new Error(
-        `Expected forced tool call \`${forceTool}\`; got stop_reason=${response.stop_reason}`
-      );
-    }
-    return { response, toolUse, usage, web_searches };
-  }
-
-  return { response, usage, web_searches };
-}
-
-/**
- * Streaming counterpart to runStructuredCall, for calls that need genuine
- * max_tokens headroom (the non-streaming SDK path times out well before a
- * large adaptive-thinking + structured-output response can complete). Mirrors
- * runStructuredCall's contract (same params, same { response, toolUse, usage,
- * web_searches } shape) so callers can swap between the two with minimal
- * surrounding change. Scoped to call sites that actually need streaming —
- * runStructuredCall remains the default for research/debate/working-group calls.
- */
-async function runStructuredStreamingCall({
+async function runModelCall({
   client,
   system,
   messages,
@@ -293,6 +234,7 @@ async function runStructuredStreamingCall({
   timeoutMs = SDK_REQUEST_TIMEOUT_MS,
   thinking,
   effort,
+  streaming = false,
 }) {
   if (!client) throw new Error('client is required');
   if (!Array.isArray(messages) || messages.length === 0) {
@@ -316,10 +258,16 @@ async function runStructuredStreamingCall({
     params.tool_choice = { type: 'tool', name: forceTool };
   }
 
+  // Per-request SDK timeout overrides the client default. The queue-level
+  // per-attempt backstop and wall-clock cap track it so a longer SDK timeout
+  // isn't strangled by a shorter queue cap.
   const perAttemptTimeoutMs = timeoutMs + ATTEMPT_BACKSTOP_BUFFER_MS;
   const wallClockMaxMs = timeoutMs + 30_000;
   const response = await apiQueue.enqueue(
-    (signal) => client.messages.stream(params, { timeout: timeoutMs, signal }).finalMessage(),
+    (signal) =>
+      streaming
+        ? client.messages.stream(params, { timeout: timeoutMs, signal }).finalMessage()
+        : client.messages.create(params, { timeout: timeoutMs, signal }),
     { perAttemptTimeoutMs, wallClockMaxMs }
   );
   const usage = tokenUsage(response);
@@ -329,28 +277,42 @@ async function runStructuredStreamingCall({
   }
 
   const web_searches = extractWebSearches(response);
+  const truncated = response.stop_reason === 'max_tokens';
 
   if (forceTool) {
     const toolUse = extractToolUse(response, forceTool);
     if (!toolUse) {
-      // A forced tool that never appeared because the model ran out of output
-      // tokens is a truncation, not a contract violation: the call ran, it just
-      // hit max_tokens before emitting the tool_use block at all. Return
-      // toolUse: null so the caller can detect stop_reason === 'max_tokens' and
-      // treat it as a first-class, resumable partial result — the same way it
-      // handles a tool block that arrives truncated mid-payload. Any other
-      // missing-tool stop_reason is still a genuine contract violation.
-      if (response.stop_reason === 'max_tokens') {
-        return { response, toolUse: null, usage, web_searches };
+      if (truncated) {
+        return { response, toolUse: null, usage, web_searches, truncated };
       }
       throw new Error(
         `Expected forced tool call \`${forceTool}\`; got stop_reason=${response.stop_reason}`
       );
     }
-    return { response, toolUse, usage, web_searches };
+    return { response, toolUse, usage, web_searches, truncated };
   }
 
-  return { response, usage, web_searches };
+  return { response, usage, web_searches, truncated };
+}
+
+/**
+ * Non-streaming structured call. Default for research/debate/working-group
+ * calls whose max_tokens ceiling comfortably fits under the non-streaming
+ * SDK's completion timeout. See runModelCall for the shared truncation
+ * contract (`truncated`, nullable `toolUse`).
+ */
+async function runStructuredCall(opts) {
+  return runModelCall({ ...opts, streaming: false });
+}
+
+/**
+ * Streaming counterpart to runStructuredCall, for calls that need genuine
+ * max_tokens headroom (the non-streaming SDK path times out well before a
+ * large adaptive-thinking + structured-output response can complete). Same
+ * contract and params as runStructuredCall; swap freely between the two.
+ */
+async function runStructuredStreamingCall(opts) {
+  return runModelCall({ ...opts, streaming: true });
 }
 
 function webFetchTool({ maxUses = 6 } = {}) {
@@ -375,6 +337,7 @@ module.exports = {
   isRetryableWebSearchError,
   runWithWebSearchRetry,
   tokenUsage,
+  runModelCall,
   runStructuredCall,
   runStructuredStreamingCall,
   getStats: apiQueue.getStats,

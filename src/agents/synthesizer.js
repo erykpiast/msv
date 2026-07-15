@@ -257,7 +257,7 @@ async function runSynthesizer({ client, idea, model, budget, forum, personas, pa
     },
   });
 
-  const { response, toolUse, usage } = await runStructuredStreamingCall({
+  const { response, toolUse, usage, truncated } = await runStructuredStreamingCall({
     client,
     model,
     budget,
@@ -285,9 +285,11 @@ async function runSynthesizer({ client, idea, model, budget, forum, personas, pa
     tools: [EMIT_SYNTHESIS_TOOL],
     forceTool: 'emit_synthesis',
     // The synthesizer consumes the full forum, persona roster, and question
-    // landscape in one shot, then emits a 6.5k-token tool call. Observed wall-clock
-    // is 60–120s; the default 60s SDK cap was timing out on rich investigations.
-    timeoutMs: 180_000,
+    // landscape in one shot, then emits up to a 32k-token tool call with xhigh
+    // effort + adaptive thinking on Opus. 180_000 (195s/210s attempt/wall-clock
+    // caps) was tuned for the prior 10k-token Haiku call and was observed
+    // timing out under the new profile; raised while we find the real ceiling.
+    timeoutMs: 600_000,
   });
 
   // toolUse is null when the call hit max_tokens before emitting the
@@ -295,7 +297,6 @@ async function runSynthesizer({ client, idea, model, budget, forum, personas, pa
   // coerceArray/|| null fallbacks below produce a well-formed truncated result
   // rather than crashing on `.input` of null.
   const payload = toolUse?.input || {};
-  const truncated = response.stop_reason === 'max_tokens';
 
   await appendLog(idea.id, 'synthesizer', {
     kind: 'response',

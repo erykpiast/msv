@@ -147,6 +147,27 @@ function buildWorkingGroups(loaderInput) {
   const logs = loaderInput.logs ?? {};
   const out = {};
 
+  // Seed a placeholder entry for every territory the coordinator has already
+  // decided on, so working groups that haven't checkpointed a pair_debates
+  // entry yet (e.g. still mid-ideation) still render as a node instead of
+  // only appearing as a row inside the Coordinator node.
+  for (const [tid, territory] of territoryMap) {
+    const assignedPair = territory?.assigned_pair ?? [];
+    out[tid] = {
+      territory,
+      pair: assignedPair.map((pid) => personaMap.get(pid) ?? { id: pid, name: pid, tradition: '', stance: '', description: '' }),
+      candidate_questions: [],
+      adversarial_marks: [],
+      aligned_questions: [],
+      researcher_reports: [],
+      observations: [],
+      moves: [],
+      surviving_claims: [],
+      terminated_by: null,
+      confidence_trajectory: deriveConfidenceTrajectory({}),
+    };
+  }
+
   for (const debate of debates) {
     const tid = debate.territory_id;
     if (!tid) continue; // v4 debates have sub_question_id, not territory_id

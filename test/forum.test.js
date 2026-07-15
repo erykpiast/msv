@@ -1,9 +1,44 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 
-const { applyReactionEffect, buildBaseNodes, buildDeadEndQuestions, contradictionKey } = require('../src/forum');
+// Redirect ~/.msv to a temp dir so appendLog calls (from judgeContradiction)
+// don't touch the real filesystem.
+const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'forum-test-'));
+process.env.MSV_ROOT = path.join(tmpHome, '.msv');
+fs.mkdirSync(path.join(process.env.MSV_ROOT, 'ideas', 'i_test', 'logs'), { recursive: true });
+
+const {
+  applyReactionEffect,
+  buildBaseNodes,
+  buildDeadEndQuestions,
+  contradictionKey,
+  judgeContradiction,
+} = require('../src/forum');
+
+// Minimal mock Anthropic client: `handler` receives the raw params passed to
+// messages.create and returns the mock response. Mirrors the pattern used in
+// test/nicknamer.test.js's makeClient.
+function makeClient(handler) {
+  let callCount = 0;
+  return {
+    callCount: () => callCount,
+    messages: {
+      create: async (params) => {
+        callCount += 1;
+        return handler(params, callCount);
+      },
+    },
+  };
+}
+
+function makeNodePair() {
+  const a = { node_id: 'n_001', working_group_id: 't_001', aggregate_confidence: 7, content: 'Claim A' };
+  const b = { node_id: 'n_002', working_group_id: 't_002', aggregate_confidence: 5, content: 'Claim B' };
+  return { a, b };
+}
 
 test('buildBaseNodes seeds nodes from surviving claims with full initial state', () => {
   const debates = [
@@ -232,6 +267,97 @@ test('forum.js emits forum.contradiction.judged and forum.done', () => {
     /bus\.emit\(\s*['"]forum\.done['"]/,
     `forum.js no longer emits 'forum.done' — spec §10.6 regression`
   );
+});
+
+// --- judgeContradiction truncation handling ---
+
+test('judgeContradiction passes maxTokens=1200 to the API call', async () => {
+  let capturedMaxTokens;
+  const client = makeClient((params) => {
+    capturedMaxTokens = params.max_tokens;
+    return {
+      stop_reason: 'tool_use',
+      content: [
+        {
+          type: 'tool_use',
+          id: 'mock_1',
+          name: 'emit_contradiction_judgement',
+          input: { contradicts: true, reason: 'They disagree on scope.' },
+        },
+      ],
+      usage: { input_tokens: 10, output_tokens: 10 },
+    };
+  });
+  const { a, b } = makeNodePair();
+  const result = await judgeContradiction({ client, model: 'mock-model', budget: null, idea: { id: 'i_test' }, a, b });
+  assert.equal(capturedMaxTokens, 1200);
+  assert.equal(result.contradicts, true);
+  assert.equal(result.reason, 'They disagree on scope.');
+});
+
+test('judgeContradiction retries once and recovers when the first call is truncated with toolUse: null', async () => {
+  const client = makeClient((params, callCount) => {
+    if (callCount === 1) {
+      // Simulates max_tokens hit before the forced tool_use block ever
+      // appeared: runModelCall returns toolUse: null in this case.
+      return {
+        stop_reason: 'max_tokens',
+        content: [{ type: 'text', text: 'thinking...' }],
+        usage: { input_tokens: 10, output_tokens: 10 },
+      };
+    }
+    return {
+      stop_reason: 'tool_use',
+      content: [
+        {
+          type: 'tool_use',
+          id: 'mock_2',
+          name: 'emit_contradiction_judgement',
+          input: { contradicts: false, reason: 'No real conflict.' },
+        },
+      ],
+      usage: { input_tokens: 10, output_tokens: 10 },
+    };
+  });
+  const { a, b } = makeNodePair();
+  const result = await judgeContradiction({ client, model: 'mock-model', budget: null, idea: { id: 'i_test' }, a, b });
+  assert.equal(client.callCount(), 2, 'expected exactly one retry after the truncated first call');
+  assert.equal(result.contradicts, false);
+  assert.equal(result.reason, 'No real conflict.');
+});
+
+test('judgeContradiction falls back to contradicts:false when both attempts are truncated (toolUse: null)', async () => {
+  const client = makeClient(() => ({
+    stop_reason: 'max_tokens',
+    content: [{ type: 'text', text: 'thinking...' }],
+    usage: { input_tokens: 10, output_tokens: 10 },
+  }));
+  const { a, b } = makeNodePair();
+  const result = await judgeContradiction({ client, model: 'mock-model', budget: null, idea: { id: 'i_test' }, a, b });
+  assert.equal(client.callCount(), 2, 'expected one retry, then a fallback without a third call');
+  assert.equal(result.contradicts, false, 'must not silently propagate a broken judgement as a genuine verdict');
+  assert.match(result.reason, /truncated/i);
+});
+
+test('judgeContradiction falls back to contradicts:false when toolUse.input is missing required fields due to truncation', async () => {
+  const client = makeClient(() => ({
+    stop_reason: 'max_tokens',
+    content: [
+      {
+        type: 'tool_use',
+        id: 'mock_3',
+        name: 'emit_contradiction_judgement',
+        // Cut off mid-JSON: `contradicts` landed but `reason` never did.
+        input: { contradicts: true },
+      },
+    ],
+    usage: { input_tokens: 10, output_tokens: 10 },
+  }));
+  const { a, b } = makeNodePair();
+  const result = await judgeContradiction({ client, model: 'mock-model', budget: null, idea: { id: 'i_test' }, a, b });
+  assert.equal(client.callCount(), 2, 'expected one retry before falling back');
+  assert.equal(result.contradicts, false, 'must not trust a partially-truncated input as a genuine contradiction');
+  assert.match(result.reason, /truncated/i);
 });
 
 test('buildDeadEndQuestions tolerates dangling aligned_id refs in researcher reports', () => {

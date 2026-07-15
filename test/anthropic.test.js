@@ -1,6 +1,36 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { extractWebSearches } = require('../src/anthropic');
+const {
+  extractWebSearches,
+  runStructuredCall,
+  runStructuredStreamingCall,
+} = require('../src/anthropic');
+
+// Non-streaming mock: exercises runStructuredCall (client.messages.create).
+function makeCreateClient(handler) {
+  return { messages: { create: async (params, opts) => handler(params, opts) } };
+}
+
+// Streaming mock: exercises runStructuredStreamingCall (client.messages.stream().finalMessage()).
+function makeStreamClient(handler) {
+  return {
+    messages: {
+      stream(params, opts) {
+        return { finalMessage: async () => handler(params, opts) };
+      },
+    },
+  };
+}
+
+function baseCallArgs(overrides = {}) {
+  return {
+    system: 'system prompt',
+    messages: [{ role: 'user', content: 'hi' }],
+    tools: [{ name: 'emit_thing' }],
+    forceTool: 'emit_thing',
+    ...overrides,
+  };
+}
 
 function makeWebSearchResponse(blocks) {
   return { content: blocks };
@@ -188,3 +218,97 @@ test('extractWebSearches reports unknown error for unrecognized content shapes',
   const r2 = extractWebSearches(makeWebSearchResponse(searchPair('q2', { foo: 'bar' })));
   assert.equal(r2[0].error.code, 'unknown');
 });
+
+// ---------------------------------------------------------------------------
+// runStructuredCall / runStructuredStreamingCall — shared truncation contract
+//
+// Both transports (create vs stream) must behave identically here: this is
+// the whole point of unifying them on runModelCall. Each case below runs
+// against both runStructuredCall (non-streaming) and runStructuredStreamingCall
+// (streaming) with an otherwise-identical response, to prove neither transport
+// silently drops the max_tokens signal or loses partial tool input.
+// ---------------------------------------------------------------------------
+
+const TRANSPORTS = [
+  { name: 'runStructuredCall (non-streaming)', run: runStructuredCall, makeClient: makeCreateClient },
+  { name: 'runStructuredStreamingCall (streaming)', run: runStructuredStreamingCall, makeClient: makeStreamClient },
+];
+
+for (const { name, run, makeClient } of TRANSPORTS) {
+  test(`${name}: returns truncated: false on a normal tool_use completion`, async () => {
+    const client = makeClient(async () => ({
+      stop_reason: 'tool_use',
+      content: [{ type: 'tool_use', id: 'x', name: 'emit_thing', input: { foo: 'bar' } }],
+      usage: { input_tokens: 10, output_tokens: 10 },
+    }));
+    const result = await run({ client, ...baseCallArgs() });
+    assert.equal(result.truncated, false);
+    assert.deepEqual(result.toolUse.input, { foo: 'bar' });
+  });
+
+  test(`${name}: returns truncated: true and toolUse: null when max_tokens hits before the forced tool block appears`, async () => {
+    // The model ran out of output tokens before it could even start the
+    // tool_use block — extractToolUse finds nothing. Must not throw; must
+    // surface truncated: true so the caller can retry/resume instead of
+    // treating this as a contract violation.
+    const client = makeClient(async () => ({
+      stop_reason: 'max_tokens',
+      content: [{ type: 'text', text: 'reasoning that ran out of room...' }],
+      usage: { input_tokens: 10, output_tokens: 4000 },
+    }));
+    const result = await run({ client, ...baseCallArgs() });
+    assert.equal(result.truncated, true);
+    assert.equal(result.toolUse, null);
+  });
+
+  test(`${name}: returns truncated: true alongside a present-but-incomplete toolUse.input`, async () => {
+    // The tool_use block appeared, but generation was cut off mid-JSON, so
+    // some required fields never got written. truncated: true tells the
+    // caller to validate defensively rather than trust the schema.
+    const client = makeClient(async () => ({
+      stop_reason: 'max_tokens',
+      content: [{ type: 'tool_use', id: 'x', name: 'emit_thing', input: { partial: true } }],
+      usage: { input_tokens: 10, output_tokens: 4000 },
+    }));
+    const result = await run({ client, ...baseCallArgs() });
+    assert.equal(result.truncated, true);
+    assert.deepEqual(result.toolUse.input, { partial: true });
+  });
+
+  test(`${name}: still throws when the forced tool is missing for a non-max_tokens reason`, async () => {
+    // end_turn (or any other stop_reason) with no forced tool block is a
+    // genuine contract violation, not a truncation — must keep throwing.
+    const client = makeClient(async () => ({
+      stop_reason: 'end_turn',
+      content: [{ type: 'text', text: 'I decline.' }],
+      usage: { input_tokens: 10, output_tokens: 5 },
+    }));
+    await assert.rejects(
+      () => run({ client, ...baseCallArgs() }),
+      /Expected forced tool call `emit_thing`; got stop_reason=end_turn/
+    );
+  });
+
+  test(`${name}: returns truncated: false and no toolUse when forceTool is absent and stop_reason is end_turn`, async () => {
+    const client = makeClient(async () => ({
+      stop_reason: 'end_turn',
+      content: [{ type: 'text', text: 'done, no tool call needed' }],
+      usage: { input_tokens: 10, output_tokens: 5 },
+    }));
+    const result = await run({ client, ...baseCallArgs({ forceTool: undefined }) });
+    assert.equal(result.truncated, false);
+    assert.equal(result.toolUse, undefined);
+  });
+
+  test(`${name}: increments budget.used_executor_calls and used_total_tokens once per call`, async () => {
+    const client = makeClient(async () => ({
+      stop_reason: 'tool_use',
+      content: [{ type: 'tool_use', id: 'x', name: 'emit_thing', input: {} }],
+      usage: { input_tokens: 100, output_tokens: 50 },
+    }));
+    const budget = {};
+    await run({ client, budget, ...baseCallArgs() });
+    assert.equal(budget.used_executor_calls, 1);
+    assert.equal(budget.used_total_tokens, 150);
+  });
+}

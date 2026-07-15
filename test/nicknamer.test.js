@@ -200,6 +200,39 @@ test('generateNicknames returns empty Map when model returns end_turn instead of
   assert.equal(result.size, 0);
 });
 
+test('generateNicknames returns empty Map when max_tokens truncation hits before the tool_use block appears', async () => {
+  // runStructuredCall returns toolUse: null (not a throw) when generation was
+  // cut off by max_tokens before the forced tool ever appeared.
+  const client = makeClient(async () => ({
+    stop_reason: 'max_tokens',
+    content: [],
+    usage: { input_tokens: 5, output_tokens: 1200 },
+  }));
+  const result = await generateNicknames(client, {
+    kind: 'wg',
+    items: [{ id: 'n_001', content: 'x' }],
+  });
+  assert.equal(result.size, 0);
+});
+
+test('generateNicknames calls onError with reason=empty_tool_input when max_tokens truncation hits before tool_use', async () => {
+  const client = makeClient(async () => ({
+    stop_reason: 'max_tokens',
+    content: [],
+    usage: { input_tokens: 5, output_tokens: 1200 },
+  }));
+  const errors = [];
+  const result = await generateNicknames(client, {
+    kind: 'wg',
+    items: [{ id: 'n_001', content: 'x' }],
+    onError: (info) => errors.push(info),
+  });
+  assert.equal(result.size, 0);
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].reason, 'empty_tool_input');
+  assert.equal(errors[0].truncated, true);
+});
+
 test('generateNicknames returns empty Map when nicknames field is not an array', async () => {
   const client = makeClient(async () => ({
     stop_reason: 'tool_use',

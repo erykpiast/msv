@@ -120,14 +120,33 @@ function contradictionKey(a, b) {
   return [a.claim_id, b.claim_id].sort().join('|');
 }
 
+// A valid judgement has a boolean `contradicts` and a non-empty `reason` —
+// the two fields the tool's schema requires. When max_tokens truncation cuts
+// generation off before or during the tool_use block, one or both can be
+// missing even though `toolUse` itself is non-null.
+function isValidJudgement(toolUse) {
+  return (
+    !!toolUse &&
+    typeof toolUse.input?.contradicts === 'boolean' &&
+    typeof toolUse.input?.reason === 'string' &&
+    toolUse.input.reason.length > 0
+  );
+}
+
 async function judgeContradiction({ client, model, budget, idea, a, b }) {
-  const { toolUse, usage } = await runStructuredCall({
+  const callParams = {
     client,
     model,
     budget,
     thinking: { type: 'adaptive' },
     system: CONTRADICTION_SYSTEM,
-    maxTokens: 400,
+    // 400 left almost no room for the adaptive-thinking preamble ahead of a
+    // forced tool call, so the model was hitting max_tokens before
+    // contradicts/reason ever landed. The payload itself is tiny (a boolean
+    // + a short string), but the budget has to cover the preamble too;
+    // 1200 matches the smallest budget used elsewhere in this codebase
+    // (e.g. nicknamer's default) and gives enough headroom for that.
+    maxTokens: 1200,
     messages: [
       {
         role: 'user',
@@ -140,13 +159,49 @@ async function judgeContradiction({ client, model, budget, idea, a, b }) {
     ],
     tools: [CONTRADICTION_TOOL],
     forceTool: 'emit_contradiction_judgement',
-  });
-
-  const result = {
-    contradicts: !!toolUse.input.contradicts,
-    reason: toolUse.input.reason,
-    usage,
   };
+
+  let call = await runStructuredCall(callParams);
+
+  // Recoverable max_tokens truncation: either the forced tool never made it
+  // into the response (toolUse === null) or it did but contradicts/reason
+  // came back incomplete. This is a single cheap 400-1200 token call, so
+  // it's worth one immediate retry with the same prompt before giving up.
+  if (call.truncated && !isValidJudgement(call.toolUse)) {
+    await appendLog(idea.id, 'forum-contradictions', {
+      kind: 'truncation_retry',
+      payload: {
+        key: contradictionKey(a, b),
+        stop_reason: call.response.stop_reason,
+        reason: call.toolUse ? 'input_incomplete' : 'tool_use_missing',
+      },
+    });
+    call = await runStructuredCall(callParams);
+  }
+
+  let result;
+  if (isValidJudgement(call.toolUse)) {
+    result = {
+      contradicts: !!call.toolUse.input.contradicts,
+      reason: call.toolUse.input.reason,
+      usage: call.usage,
+    };
+  } else {
+    // Still broken after the retry: don't let a broken/undefined judgement
+    // propagate as a genuine verdict. Fall back to the conservative default —
+    // "no contradiction" — since a missed contradiction just leaves both
+    // claims standing, whereas fabricating one would wrongly demote a node.
+    await appendLog(idea.id, 'forum-contradictions', {
+      kind: 'contradiction_fallback',
+      payload: { key: contradictionKey(a, b), stop_reason: call.response.stop_reason },
+    });
+    result = {
+      contradicts: false,
+      reason: '(judgement unavailable: response truncated by max_tokens)',
+      usage: call.usage,
+    };
+  }
+
   await appendLog(idea.id, 'forum-contradictions', {
     kind: 'response',
     payload: { key: contradictionKey(a, b), result },
@@ -238,4 +293,5 @@ module.exports = {
   buildBaseNodes,
   buildDeadEndQuestions,
   contradictionKey,
+  judgeContradiction,
 };

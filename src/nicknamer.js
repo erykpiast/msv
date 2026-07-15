@@ -140,6 +140,7 @@ async function generateNicknames(
   const userMessage = buildUserMessage({ kind, items, context });
 
   let toolUse;
+  let truncated = false;
   try {
     const result = await runStructuredCall({
       client,
@@ -151,9 +152,21 @@ async function generateNicknames(
       forceTool: 'emit_nicknames',
     });
     toolUse = result.toolUse;
+    truncated = result.truncated;
   } catch (err) {
     if (typeof onError === 'function') {
       onError({ reason: 'api_error', message: err?.message || String(err) });
+    }
+    return new Map();
+  }
+
+  // max_tokens was hit before the forced tool_use block ever appeared —
+  // runStructuredCall returns toolUse: null instead of throwing in this case
+  // (a cutoff, not a contract violation). Treat it the same as an empty tool
+  // response rather than crashing on `.input` of null.
+  if (!toolUse) {
+    if (typeof onError === 'function') {
+      onError({ reason: 'empty_tool_input', received: 0, valid: 0, truncated });
     }
     return new Map();
   }
@@ -173,6 +186,7 @@ async function generateNicknames(
       reason: raw.length === 0 ? 'empty_tool_input' : 'all_rejected',
       received: raw.length,
       valid: cleaned.length,
+      truncated,
     });
   }
   return deduped;
