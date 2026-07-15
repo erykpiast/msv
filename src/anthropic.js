@@ -13,6 +13,17 @@ const SDK_REQUEST_TIMEOUT_MS = 60_000;
 // Slack between SDK timeout and the queue-level backstop, mirroring the
 // PER_ATTEMPT_TIMEOUT_MS = 75_000 default in api_queue.js (60s + 15s).
 const ATTEMPT_BACKSTOP_BUFFER_MS = 15_000;
+// Retry budget added on top of a single attempt's timeout. Deliberately much
+// larger than ATTEMPT_BACKSTOP_BUFFER_MS: this bounds total time spent
+// retrying, not how long we tolerate a single hung request, so it can be
+// generous without making a genuinely stuck call look "fine" for longer.
+// Sized off a production incident where 6 concurrent working-group calls all
+// stalled together for ~208s (a correlated upstream/network event, not
+// independent bad luck) and the old 30_000 margin (giving 90s total at the
+// 60s default) bought exactly one retry — nowhere near enough to ride it out.
+// At the 60s default this now yields 300s total; scales with longer
+// explicit timeoutMs (coordinator/researcher/synthesizer) too.
+const WALL_CLOCK_RETRY_BUDGET_MS = 240_000;
 
 function createClient() {
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -262,7 +273,7 @@ async function runModelCall({
   // per-attempt backstop and wall-clock cap track it so a longer SDK timeout
   // isn't strangled by a shorter queue cap.
   const perAttemptTimeoutMs = timeoutMs + ATTEMPT_BACKSTOP_BUFFER_MS;
-  const wallClockMaxMs = timeoutMs + 30_000;
+  const wallClockMaxMs = timeoutMs + WALL_CLOCK_RETRY_BUDGET_MS;
   const response = await apiQueue.enqueue(
     (signal) =>
       streaming

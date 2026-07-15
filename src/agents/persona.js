@@ -27,6 +27,15 @@ const {
 } = require('../moves');
 const { appendLog } = require('../storage');
 
+// All seven runStructuredCall sites in this file run concurrently, one per
+// persona per territory (up to CONCURRENCY-many at once — see api_queue.js) —
+// the working-groups stage that leans hardest on the SDK's default 60s
+// timeout / 90s wall-clock budget. A production run hit a correlated
+// multi-minute upstream stall that took out an entire batch simultaneously;
+// that default budget only bought a single retry. 120s mirrors
+// coordinator.js's and discovery.js's precedent for adaptive-thinking calls.
+const WORKING_GROUP_TIMEOUT_MS = 120_000;
+
 const EMIT_MOVE_TOOL = {
   name: 'emit_move',
   description:
@@ -185,6 +194,7 @@ async function emitOneMove({
     // 1400 -> 2400 (+71%): same emit_move tool/schema as runDebateMove; bumped
     // in step with it rather than guessing an unrelated number.
     maxTokens: 2400,
+    timeoutMs: WORKING_GROUP_TIMEOUT_MS,
     messages,
     tools: [EMIT_MOVE_TOOL],
     forceTool: 'emit_move',
@@ -480,6 +490,7 @@ async function runCrossPollinationReaction({
       // 1200 -> 2000 (+67%): no confirmed-truncation log data for this site,
       // but same shape of risk as runAlignmentMove; conservative bump.
       maxTokens: 2000,
+      timeoutMs: WORKING_GROUP_TIMEOUT_MS,
       messages: [
         { role: 'user', content: userContent },
         ...feedbackMessages,
@@ -636,6 +647,7 @@ async function runIdeation({ client, idea, model, budget, territory, persona }) 
       // 3000 -> 5000 (+67%): array of up to 8 ideation items; no confirmed
       // truncation log for this site, conservative bump per instructions.
       maxTokens: 5000,
+      timeoutMs: WORKING_GROUP_TIMEOUT_MS,
       messages: [{ role: 'user', content: baseUserContent }, ...feedbackMessages],
       tools: [EMIT_CANDIDATE_QUESTIONS_TOOL],
       forceTool: 'emit_candidate_questions',
@@ -713,6 +725,7 @@ async function runAdversarialMark({
       // 2000 -> 3200 (+60%): no confirmed-truncation data for this site,
       // conservative bump per instructions.
       maxTokens: 3200,
+      timeoutMs: WORKING_GROUP_TIMEOUT_MS,
       messages: [{ role: 'user', content: baseUserContent }, ...feedbackMessages],
       tools: [EMIT_ADVERSARIAL_MARKS_TOOL],
       forceTool: 'emit_adversarial_marks',
@@ -801,6 +814,7 @@ async function runAlignmentMove({
       // beyond "hit the 1200 ceiling exactly", so this is a judgement call
       // rather than a measured multiplier.
       maxTokens: 2400,
+      timeoutMs: WORKING_GROUP_TIMEOUT_MS,
       messages: [{ role: 'user', content: baseUserContent }, ...feedbackMessages],
       tools: [EMIT_ALIGNMENT_MOVE_TOOL],
       forceTool: 'emit_alignment_move',
@@ -881,6 +895,7 @@ async function runObservation({
     // 2000 -> 3200 (+60%): array of up to 6 observations; no confirmed
     // truncation data for this site, conservative bump per instructions.
     maxTokens: 3200,
+    timeoutMs: WORKING_GROUP_TIMEOUT_MS,
     messages: [
       {
         role: 'user',
@@ -971,6 +986,7 @@ async function runDebateMove({
     // 1400 -> 2400 (+71%): same emit_move tool/schema as emitOneMove; bumped
     // in step with it.
     maxTokens: 2400,
+    timeoutMs: WORKING_GROUP_TIMEOUT_MS,
     messages: [{ role: 'user', content: userContent }],
     tools: [EMIT_MOVE_TOOL],
     forceTool: 'emit_move',

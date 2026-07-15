@@ -5,7 +5,9 @@
 // Max retries: 5 per call.
 // Backoff: Retry-After header (capped at BACKOFF_MAX_MS) first; exponential with jitter (base 1 s, max 30 s) otherwise.
 // Retry classes: 429, all 5xx, network errors (ETIMEDOUT, ECONNRESET, ENOTFOUND, ECONNREFUSED),
-// and queue-level per-attempt timeouts (code EATTEMPTTIMEOUT — see below).
+// queue-level per-attempt timeouts (code EATTEMPTTIMEOUT — see below), and the
+// SDK's own APIConnectionError/APIConnectionTimeoutError (status-less connection
+// failures and request timeouts).
 // Immediate surface: any 4xx except 429.
 // Per-call wall-clock cap (CALL_WALL_CLOCK_MAX_MS) bounds total retry latency to avoid stall under sustained 429.
 // Per-attempt timeout (PER_ATTEMPT_TIMEOUT_MS) backstops the SDK's own timeout via Promise.race:
@@ -16,12 +18,16 @@
 'use strict';
 
 const { WallClockCapError } = require('./failure');
+const { APIConnectionError } = require('@anthropic-ai/sdk');
 
 const CONCURRENCY = 6;
 const MAX_RETRIES = 5;
 const BACKOFF_BASE_MS = 1_000;
 const BACKOFF_MAX_MS = 30_000;
-const CALL_WALL_CLOCK_MAX_MS = 90_000;
+// Mirrors anthropic.js's WALL_CLOCK_RETRY_BUDGET_MS-derived default (60s SDK
+// timeout + 240s retry budget = 300s) for callers that enqueue() directly
+// without their own override.
+const CALL_WALL_CLOCK_MAX_MS = 300_000;
 // Slightly above SDK_REQUEST_TIMEOUT_MS (60s in anthropic.js) so the SDK has a
 // chance to reject cleanly first; this fires only if the SDK promise never
 // settles at all.
@@ -86,6 +92,15 @@ function isRetryable(error) {
   if (status != null && status >= 400 && status < 500) return false;
   const code = error?.code ?? error?.cause?.code;
   if (RETRYABLE_NETWORK_CODES.has(code)) return true;
+  // The SDK's own request timeout (SDK_REQUEST_TIMEOUT_MS in anthropic.js,
+  // 60s) rejects with APIConnectionError/APIConnectionTimeoutError — status
+  // and headers are both undefined (see error.generate()'s !status||!headers
+  // branch), so neither check above catches it. The client is constructed
+  // with maxRetries: 0 specifically so this queue owns all retry decisions;
+  // without this branch, every ordinary 60s-plus round trip (adaptive
+  // thinking + web_search routinely run long) surfaces as a fatal,
+  // un-retried "Request timed out." and aborts the whole run on one slow call.
+  if (error instanceof APIConnectionError) return true;
   return false;
 }
 

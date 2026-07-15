@@ -113,6 +113,12 @@ async function runCoordinatorInitial({ client, idea, model, budget, personas, bu
     // payload itself is small. 4000 gives that thinking headroom room without
     // reaching for researcher/synthesizer-sized ceilings this schema doesn't need.
     maxTokens: 4000,
+    // Bumped from the 60s default (see api_queue.js's isRetryable fix): this
+    // call's adaptive thinking routinely runs close to or past 60s, which
+    // left almost no wall-clock budget (default 90s) for the queue to retry
+    // a genuine timeout. 120s mirrors discovery.js's precedent for its own
+    // thinking-heavy calls.
+    timeoutMs: 120_000,
     messages,
     tools: [EMIT_TERRITORIES_TOOL],
     forceTool: 'emit_territories',

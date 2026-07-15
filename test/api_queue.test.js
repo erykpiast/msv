@@ -2,6 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { APIConnectionTimeoutError } = require('@anthropic-ai/sdk');
 
 // The api_queue keeps module-level state (inflight/queued/completed/retried),
 // so each test loads a fresh copy from the require cache.
@@ -134,6 +135,26 @@ test('per-attempt timeout fires when fn never settles, then exhausts retries', a
   assert.ok(attempts >= 2, `expected retries to fire; got ${attempts} attempts`);
   const stats = queue.getStats();
   assert.ok(stats.retried >= 1, 'retried counter should advance on EATTEMPTTIMEOUT');
+});
+
+test('SDK request-timeout error (APIConnectionTimeoutError) is retried, not surfaced immediately', async () => {
+  // Regression: the SDK's own 60s request timeout ("Request timed out.")
+  // rejects with status===undefined and code===undefined, since it's raised
+  // client-side before any HTTP response exists (see anthropic.js's
+  // SDK_REQUEST_TIMEOUT_MS). isRetryable() used to have no branch for this
+  // shape and treated it as fatal, aborting the whole run on one slow call
+  // even though the client is built with maxRetries: 0 specifically so this
+  // queue owns all retry decisions.
+  const queue = loadFreshQueue();
+  let attempts = 0;
+  const result = await queue.enqueue(async () => {
+    attempts += 1;
+    if (attempts < 3) throw new APIConnectionTimeoutError();
+    return 'ok';
+  });
+  assert.equal(result, 'ok');
+  assert.equal(attempts, 3);
+  assert.ok(queue.getStats().retried >= 2);
 });
 
 test('non-retryable 4xx surfaces immediately without retrying', async () => {

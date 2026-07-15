@@ -1,5 +1,7 @@
 'use strict';
 
+const { APIConnectionError } = require('@anthropic-ai/sdk');
+
 class CancellationError extends Error {
   constructor(message) {
     super(message);
@@ -34,6 +36,10 @@ function classifyError(err) {
   if (status === 429) return 'anthropic_unavailable';
   const code = err?.code ?? err?.cause?.code;
   if (RETRYABLE_NETWORK_CODES.has(code)) return 'anthropic_unavailable';
+  // Status-less SDK connection/timeout errors (see api_queue.js's isRetryable
+  // for why these carry neither status nor a recognized code) exhausting
+  // retries still means Anthropic was unreachable/slow, not an internal bug.
+  if (err instanceof APIConnectionError) return 'anthropic_unavailable';
   // Message-shape fallback for legacy callers that throw a plain Error with
   // the wall-clock-cap text; the instanceof check above is the primary path.
   if (typeof err?.message === 'string' && /exceeded wall-clock cap/.test(err.message)) {
