@@ -11,8 +11,75 @@ const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'synthesizer-test-'));
 process.env.MSV_ROOT = path.join(tmpHome, '.msv');
 fs.mkdirSync(path.join(process.env.MSV_ROOT, 'ideas', 'i_test', 'logs'), { recursive: true });
 
-const { renderFindings, renderFindingsText, runSynthesizer } = require('../src/agents/synthesizer');
+const { renderFindings, renderFindingsText, runSynthesizer, buildEmitSynthesisTool } = require('../src/agents/synthesizer');
 const { createMockClient } = require('./mocks/anthropic');
+const { readLog } = require('../src/storage');
+
+// Builds a client that captures the `tools[0]` (the built emit_synthesis tool
+// definition) passed to messages.stream, then returns the shared mock's
+// canned emit_synthesis payload — same capture technique as the existing
+// `passes timeoutMs` test below.
+function makeSchemaCapturingClient() {
+  let capturedTool;
+  const client = {
+    capturedTool: () => capturedTool,
+    messages: {
+      stream(params) {
+        capturedTool = params.tools?.[0];
+        return {
+          async finalMessage() {
+            return {
+              stop_reason: 'tool_use',
+              content: [{
+                type: 'tool_use',
+                id: 'mock',
+                name: 'emit_synthesis',
+                input: {
+                  report: 'Mock. '.repeat(60),
+                  headline_findings: ['A.', 'B.', 'C.'],
+                  open_tensions: [],
+                  sections: [
+                    { area_title: 'A', area_summary: 's', key_findings: [{ content: 'c', confidence: 'high' }] },
+                    { area_title: 'B', area_summary: 's', key_findings: [{ content: 'c', confidence: 'high' }] },
+                  ],
+                },
+              }],
+              usage: { input_tokens: 10, output_tokens: 10 },
+            };
+          },
+        };
+      },
+    },
+  };
+  return client;
+}
+
+// A synthetic forum with `nodeCount` nodes and `sourceCount` deduplicated
+// source URLs spread across pairDebates' researcher_reports — big enough to
+// push the built schema's maxItems well past today's fixed values.
+function buildLargeSynthesizerInputs({ nodeCount, sourceCount }) {
+  const inputs = buildSynthesizerInputs();
+  inputs.forum.nodes = Array.from({ length: nodeCount }, (_, i) => ({
+    node_id: `n_${i}`,
+    survival_rank: i + 1,
+    working_group_id: `t_${i % 5}`,
+    aggregate_confidence: 0.5,
+    has_open_question: false,
+    contradiction_with_node_id: null,
+    content: `Claim number ${i}.`,
+    reactions: [],
+  }));
+  inputs.pairDebates = [{
+    researcher_reports: [{
+      findings: Array.from({ length: sourceCount }, (_, i) => ({
+        finding_id: `f_${i}`,
+        source_url: `https://example.com/${i}`,
+        content: `content ${i}`,
+      })),
+    }],
+  }];
+  return inputs;
+}
 
 // Minimal idea/forum/personas/pairDebates the synthesizer can render without
 // throwing. The mock client returns a complete `emit_synthesis` payload, so
@@ -306,6 +373,81 @@ test('runSynthesizer reports truncated: falsy on a normal completion', async () 
 });
 
 // ---------------------------------------------------------------------------
+// buildEmitSynthesisTool — schema scaling unit tests
+// ---------------------------------------------------------------------------
+
+test('buildEmitSynthesisTool scales sections/key_findings/key_references maxItems above today\'s fixed values for a large investigation', () => {
+  const tool = buildEmitSynthesisTool({ nodeCount: 60, totalSourceCount: 150 });
+  const props = tool.input_schema.properties;
+
+  assert.ok(props.sections.maxItems > 6, `sections.maxItems should exceed the old fixed 6; got ${props.sections.maxItems}`);
+  assert.ok(
+    props.sections.items.properties.key_findings.maxItems > 5,
+    `key_findings.maxItems should exceed the old fixed 5; got ${props.sections.items.properties.key_findings.maxItems}`
+  );
+  assert.ok(props.key_references.maxItems > 8, `key_references.maxItems should exceed the old fixed 8; got ${props.key_references.maxItems}`);
+});
+
+test('buildEmitSynthesisTool does not scale below today\'s minimums for a small investigation', () => {
+  const tool = buildEmitSynthesisTool({ nodeCount: 1, totalSourceCount: 0 });
+  const props = tool.input_schema.properties;
+
+  assert.ok(props.sections.maxItems >= props.sections.minItems, 'sections.maxItems must stay at/above its own minItems');
+  assert.ok(
+    props.sections.items.properties.key_findings.maxItems >= props.sections.items.properties.key_findings.minItems,
+    'key_findings.maxItems must stay at/above its own minItems'
+  );
+  assert.ok(props.key_references.maxItems >= 1, 'key_references.maxItems must stay usable even for a tiny investigation');
+});
+
+test('buildEmitSynthesisTool leaves headline_findings, tension_points, next_pass_proposals, open_tensions unscaled regardless of input size', () => {
+  const small = buildEmitSynthesisTool({ nodeCount: 1, totalSourceCount: 0 });
+  const large = buildEmitSynthesisTool({ nodeCount: 60, totalSourceCount: 150 });
+
+  for (const field of ['headline_findings', 'tension_points', 'next_pass_proposals', 'open_tensions']) {
+    assert.equal(
+      small.input_schema.properties[field].maxItems,
+      large.input_schema.properties[field].maxItems,
+      `${field}.maxItems should be identical for small and large inputs`
+    );
+  }
+});
+
+test('runSynthesizer builds a schema with scaled maxItems for a large synthetic investigation', async () => {
+  const client = makeSchemaCapturingClient();
+  const bus = makeRecordingBus();
+  const inputs = buildLargeSynthesizerInputs({ nodeCount: 60, sourceCount: 150 });
+
+  await runSynthesizer({ client, bus, ...inputs });
+
+  const tool = client.capturedTool();
+  assert.ok(tool, 'the emit_synthesis tool definition must have been captured');
+  const props = tool.input_schema.properties;
+  assert.ok(props.sections.maxItems > 6, `expected scaled sections.maxItems > 6; got ${props.sections.maxItems}`);
+  assert.ok(props.key_references.maxItems > 8, `expected scaled key_references.maxItems > 8; got ${props.key_references.maxItems}`);
+});
+
+test('runSynthesizer logs coverage (sources available vs. rendered/included) in its request and response logs', async () => {
+  const client = createMockClient();
+  const bus = makeRecordingBus();
+  const inputs = buildLargeSynthesizerInputs({ nodeCount: 10, sourceCount: 100 });
+
+  await runSynthesizer({ client, bus, ...inputs });
+
+  // Every test in this file logs to the same idea id, so the log file
+  // accumulates entries across tests — take the most recent request/response
+  // pair rather than the first, which would belong to an earlier test.
+  const entries = await readLog('i_test', 'synthesizer');
+  const request = entries.filter((e) => e.kind === 'request').at(-1);
+  const response = entries.filter((e) => e.kind === 'response').at(-1);
+
+  assert.equal(request.payload.source_available_count, 100);
+  assert.ok(request.payload.finding_ref_count < 100, 'the rendered finding_ref_count should be capped below the full available count');
+  assert.equal(response.payload.source_available_count, 100);
+  assert.equal(typeof response.payload.key_references_count, 'number');
+});
+
+// ---------------------------------------------------------------------------
 // renderFindings — unit tests
 // ---------------------------------------------------------------------------
 
@@ -331,14 +473,25 @@ test('renderFindings skips findings with no source_url', () => {
   assert.equal(refs[0].url, 'https://example.com');
 });
 
-test('renderFindings caps at 30 refs', () => {
-  const findings = Array.from({ length: 50 }, (_, i) => ({
+test('renderFindings scales its cap above 30 when far more than 30 sources are available', () => {
+  const findings = Array.from({ length: 100 }, (_, i) => ({
     finding_id: `f${i}`,
     source_url: `https://example.com/${i}`,
     content: `content ${i}`,
   }));
   const refs = renderFindings([{ researcher_reports: [{ findings }] }]);
-  assert.equal(refs.length, 30);
+  assert.ok(refs.length > 30, `expected more than 30 refs for 100 available sources; got ${refs.length}`);
+  assert.ok(refs.length < 100, `expected the scaled cap to still be below the full 100 available; got ${refs.length}`);
+});
+
+test('renderFindings keeps today\'s floor behavior when 30 or fewer sources are available', () => {
+  const findings = Array.from({ length: 20 }, (_, i) => ({
+    finding_id: `f${i}`,
+    source_url: `https://example.com/${i}`,
+    content: `content ${i}`,
+  }));
+  const refs = renderFindings([{ researcher_reports: [{ findings }] }]);
+  assert.equal(refs.length, 20, 'a small investigation should not have its sources clipped');
 });
 
 test('renderFindings sorts by quality: primary before secondary before indirect', () => {
