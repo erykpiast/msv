@@ -298,6 +298,8 @@ For each node in the input:
 
 Always invoke the \`emit_nicknames\` tool. Do not return free-form text.`;
 
+const BREADTH_AREAS = `You measure the topical BREADTH of one research investigation. You are given a numbered list of its findings. Cluster them into distinct AREAS OF INQUIRY: two findings share an area if they would sit under the same heading in a survey of the topic. Judge by subject matter, not by wording. Every finding lands in exactly one area. Prefer the coarsest grouping that still keeps genuinely different subjects apart — do not split hairs, do not lump unrelated subjects together. Always invoke the \`report_areas\` tool; do not return free-form text.`;
+
 module.exports = {
   PERSPECTIVE_DISCOVERY,
   COORDINATOR_TERRITORIES,
@@ -312,6 +314,7 @@ module.exports = {
   SYNTHESIZER,
   NICKNAMER_WG,
   NICKNAMER_FORUM,
+  BREADTH_AREAS,
   // v4 compat aliases
   COORDINATOR_INITIAL: COORDINATOR_TERRITORIES,
   PERSONA_BASE: PERSONA_DEBATE,

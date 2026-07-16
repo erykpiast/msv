@@ -376,6 +376,19 @@ export type SynthesisNextPassProposal = {
   territory_hint?: string;
 };
 
+export type SynthesisBreadthArea = {
+  label: string;
+  finding_indices: number[];
+};
+
+export type SynthesisBreadth = {
+  n_areas: number;
+  evenness: number;
+  areas: SynthesisBreadthArea[];
+  model: string;
+  computed_at: string;
+};
+
 export type SynthesisView = {
   report: string;
   headline_findings: string[];
@@ -388,6 +401,8 @@ export type SynthesisView = {
   tension_points?: SynthesisTensionPoint[];
   key_references?: SynthesisReference[];
   next_pass_proposals?: SynthesisNextPassProposal[];
+  // realized-breadth metric (issue #33)
+  breadth?: SynthesisBreadth;
 } | null;
 
 export type PersonaInteractionCell = {
