@@ -21,6 +21,10 @@ function setRootForTesting(dir) {
   ARCHIVE_DIR = path.join(ROOT_DIR, 'archive');
 }
 
+// These max_* fields are tracked/reported reference points, not enforced ceilings —
+// nothing in the pipeline checks used_* against them and aborts. The genuinely-hard
+// caps live elsewhere: per-call `max_tokens` in anthropic.js and the server-side
+// `max_uses` on researcher tools in agents/researcher.js.
 const DEFAULT_BUDGET = {
   max_executor_calls: 240,
   max_total_tokens: 8_000_000,
