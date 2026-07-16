@@ -277,6 +277,8 @@ export type Stage = {
   detail_ref: string;
 };
 
+// The max_* fields here are tracked reference points for display, not enforced
+// ceilings — nothing aborts the run when used_* exceeds them.
 export type Budget = {
   used_executor_calls: number;
   max_executor_calls: number;
