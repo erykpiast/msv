@@ -262,8 +262,13 @@ async function runSynthesizer({ client, idea, model, budget, forum, personas, pa
     model,
     budget,
     system: SYNTHESIZER,
-    thinking: { type: 'adaptive' },
-    effort: 'xhigh',
+    // thinking/effort dropped: adaptive thinking + xhigh effort was causing
+    // the model to drift into XML-style `<parameter name="...">`
+    // pseudo-tool-call syntax inside the array fields (see
+    // logs/synthesizer.jsonl `malformed_payload` entries for the 175a40f6
+    // run — reproduced twice with this config).
+    // thinking: { type: 'adaptive' },
+    // effort: 'xhigh',
     // Streamed so the SDK's non-streaming timeout ceiling doesn't cap how high
     // maxTokens can go. Raised from 10,000 after observing stop_reason:
     // 'max_tokens' silently truncate the structured payload at that ceiling.
@@ -298,6 +303,8 @@ async function runSynthesizer({ client, idea, model, budget, forum, personas, pa
   // rather than crashing on `.input` of null.
   const payload = toolUse?.input || {};
 
+  const shapeIssues = diagnosePayloadShape(payload);
+
   await appendLog(idea.id, 'synthesizer', {
     kind: 'response',
     payload: {
@@ -307,8 +314,23 @@ async function runSynthesizer({ client, idea, model, budget, forum, personas, pa
       headline_count: (payload.headline_findings || []).length,
       report_chars: (payload.report || '').length,
       section_count: (payload.sections || []).length,
+      shape_issues: shapeIssues.length ? shapeIssues : undefined,
     },
   });
+
+  // A well-formed tool_use response (not caught by the max_tokens truncation
+  // check) can still carry a degenerate payload — e.g. the model closes out
+  // the call normally but writes a stray string into an array field. That
+  // previously surfaced as silent empty/null results with no trace of what
+  // the model actually emitted. Log the raw shape separately so a future
+  // occurrence is diagnosable from the log alone, without needing to infer
+  // "648 is a string length, not an array length" after the fact.
+  if (shapeIssues.length) {
+    await appendLog(idea.id, 'synthesizer', {
+      kind: 'malformed_payload',
+      payload: { stop_reason: response.stop_reason, truncated, usage, issues: shapeIssues },
+    });
+  }
 
   if (bus) bus.emit('synthesizer.done', {
     headline_count: (payload.headline_findings || []).length,
@@ -340,6 +362,47 @@ async function runSynthesizer({ client, idea, model, budget, forum, personas, pa
 // parsing the string; if the result isn't an array, fall back to null so the
 // renderer's `Array.isArray` guards take the empty path instead of crashing on
 // `.map`. Returns null for any non-array, non-parseable input.
+const EXPECTED_ARRAY_FIELDS = [
+  'headline_findings',
+  'sections',
+  'open_tensions',
+  'question_landscape',
+  'tension_points',
+  'key_references',
+  'next_pass_proposals',
+];
+
+function previewValue(value) {
+  const str = typeof value === 'string' ? value : JSON.stringify(value);
+  return (str || '').slice(0, 200);
+}
+
+// Anthropic doesn't enforce the tool's JSON schema on the model's output, so a
+// field can come back the wrong type (e.g. a stray string where an array was
+// required) even on a clean, non-truncated tool_use response. Record what was
+// actually there — type + short preview — for every field that doesn't match
+// what emit_synthesis's schema requires, so a future occurrence is
+// diagnosable from the log instead of needing to reverse-engineer bogus
+// `.length` counts.
+function diagnosePayloadShape(payload) {
+  const issues = [];
+  for (const field of EXPECTED_ARRAY_FIELDS) {
+    const value = payload[field];
+    if (value === undefined || Array.isArray(value)) continue;
+    issues.push({ field, expected: 'array', actual_type: typeof value, preview: previewValue(value) });
+  }
+  const report = payload.report;
+  if (report !== undefined && (typeof report !== 'string' || report.length < 100)) {
+    issues.push({
+      field: 'report',
+      expected: 'string (minLength 100)',
+      actual_type: typeof report,
+      preview: previewValue(report),
+    });
+  }
+  return issues;
+}
+
 function coerceArray(value) {
   if (Array.isArray(value)) return value;
   if (typeof value === 'string' && value.trim().startsWith('[')) {
