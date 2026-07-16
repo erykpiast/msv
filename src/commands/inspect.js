@@ -122,6 +122,16 @@ async function runInspectCommand(args) {
   const url = `http://localhost:${port}/?id=${encodeURIComponent(opts.id)}`;
   process.stdout.write(`→ Vite dev server ready on ${url}\n`);
 
+  const DEFAULT_PORT = 5180;
+  if (opts.port === null && port !== DEFAULT_PORT) {
+    process.stderr.write(
+      `⚠ Default port ${DEFAULT_PORT} was already in use — bound to ${port} instead.\n` +
+      `  A running "msv run" process auto-discovers this via a port file in the idea\n` +
+      `  directory, so live updates should still work. If you're posting to the relay\n` +
+      `  URL directly, or overriding MSV_INSPECT_URL, point it at port ${port}.\n`
+    );
+  }
+
   // Trigger Vite's dep pre-bundling before opening the browser so the user
   // doesn't see a blank page during the 2–4s cold-bundle on first run.
   if (typeof server.warmupRequest === 'function') {
