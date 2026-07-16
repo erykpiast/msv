@@ -273,6 +273,12 @@ async function runJointResearcher({
 
   let usedToolCalls = 0;
   let turnIndex = 0;
+  // Guards the max_tokens-truncation retry (see below) to exactly one attempt
+  // per researcher run — this targets a specific, narrow failure mode (the
+  // model was cut off mid-JSON while emitting emit_researcher_report), not a
+  // general retry framework. If the retry also truncates/malforms, we fall
+  // through to the existing dead_end handling.
+  let truncationRetryUsed = false;
 
   await appendLog(idea.id, logFile, {
     kind: 'request',
@@ -303,16 +309,24 @@ async function runJointResearcher({
     // wraps each researcher in withRetry, so a transient timeout gets one
     // retry attempt and only after both fail does the pair surface a dead_end
     // with the captured error.
-    const { response, usage } = await runStructuredCall({
+    const { response, usage, truncated, toolUse } = await runStructuredCall({
       client,
       system: RESEARCHER,
       messages,
       tools,
       forceTool: forceEmit ? 'emit_researcher_report' : undefined,
       model,
-      maxTokens: 4000,
+      // Bumped from 4000 after production logs showed turns that truncated at
+      // that ceiling had already produced 5325-6967 output tokens: the model
+      // was cut off mid-JSON while emitting emit_researcher_report, losing all
+      // the research work already done in the turn. 8000 gives headroom above
+      // the worst observed case; kept well under the synthesizer's 32k budget
+      // since this call's payload (a handful of findings + a search_trace
+      // array, see RESEARCHER_REPORT_JSON_SCHEMA) is much smaller.
+      maxTokens: 8000,
       budget,
       timeoutMs: RESEARCHER_TIMEOUT_MS,
+      thinking: { type: 'adaptive' },
     });
 
     // Count server-side tool invocations (web_search, web_fetch) toward researcher budget.
@@ -380,10 +394,46 @@ async function runJointResearcher({
       forced: forceEmit,
     });
 
-    // Check for the final report tool call.
-    const reportBlock = (response.content || []).find(
-      (b) => b.type === 'tool_use' && b.name === 'emit_researcher_report'
-    );
+    // Check for the final report tool call. When this turn forced the tool
+    // (forceEmit), prefer the runModelCall-derived `toolUse` — it already
+    // handles the max_tokens/toolUse=null contract for us — over re-deriving
+    // from response.content.
+    const reportBlock = forceEmit
+      ? toolUse
+      : (response.content || []).find(
+          (b) => b.type === 'tool_use' && b.name === 'emit_researcher_report'
+        );
+
+    // Recoverable max_tokens truncation: either the forced tool never made it
+    // into the response at all (toolUse === null), or it did but its findings
+    // are unrecoverable (normalizeReport would force dead_end, discarding real
+    // research work already done this turn — the production bug). Give the
+    // model exactly one more turn to re-emit a shorter, complete report before
+    // accepting the loss.
+    const missingDueToTruncation = forceEmit && truncated && !reportBlock;
+    const malformedDueToTruncation =
+      !!reportBlock && truncated && coerceArray(reportBlock.input && reportBlock.input.findings) === null;
+
+    if (!truncationRetryUsed && (missingDueToTruncation || malformedDueToTruncation)) {
+      truncationRetryUsed = true;
+      await appendLog(idea.id, logFile, {
+        kind: 'truncation_retry',
+        payload: {
+          aligned_id: aqId,
+          turn_index: turnIndex,
+          stop_reason: response.stop_reason,
+          reason: missingDueToTruncation ? 'tool_use_missing' : 'findings_unrecoverable',
+        },
+      });
+      messages.push({ role: 'assistant', content: response.content || [] });
+      messages.push({
+        role: 'user',
+        content:
+          'Your previous emit_researcher_report call was cut off by the max_tokens limit before it could finish, so the findings could not be recovered. Re-emit the report now via emit_researcher_report based on the research you already have — keep it concise (at most 3-4 findings) so it fits within budget this time.',
+      });
+      turnIndex += 1;
+      continue;
+    }
 
     if (reportBlock) {
       const normalized = await normalizeReport(reportBlock.input, {

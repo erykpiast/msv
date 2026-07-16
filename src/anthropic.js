@@ -13,6 +13,17 @@ const SDK_REQUEST_TIMEOUT_MS = 60_000;
 // Slack between SDK timeout and the queue-level backstop, mirroring the
 // PER_ATTEMPT_TIMEOUT_MS = 75_000 default in api_queue.js (60s + 15s).
 const ATTEMPT_BACKSTOP_BUFFER_MS = 15_000;
+// Retry budget added on top of a single attempt's timeout. Deliberately much
+// larger than ATTEMPT_BACKSTOP_BUFFER_MS: this bounds total time spent
+// retrying, not how long we tolerate a single hung request, so it can be
+// generous without making a genuinely stuck call look "fine" for longer.
+// Sized off a production incident where 6 concurrent working-group calls all
+// stalled together for ~208s (a correlated upstream/network event, not
+// independent bad luck) and the old 30_000 margin (giving 90s total at the
+// 60s default) bought exactly one retry — nowhere near enough to ride it out.
+// At the 60s default this now yields 300s total; scales with longer
+// explicit timeoutMs (coordinator/researcher/synthesizer) too.
+const WALL_CLOCK_RETRY_BUDGET_MS = 240_000;
 
 function createClient() {
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -197,21 +208,32 @@ function tokenUsage(response) {
 }
 
 /**
- * Run a single call that may use server-side tools (web_search) and is required
- * to terminate by invoking a single forced client tool. The loop drives the
- * web-search/server-tool resolution that the API handles internally — server
- * tools don't need client handling; we just keep stepping until the model emits
- * the forced tool call or hits stop_reason: end_turn.
+ * Shared core for runStructuredCall / runStructuredStreamingCall. Runs a call
+ * that may use server-side tools (web_search) and is optionally required to
+ * terminate by invoking a single forced client tool. Server tools don't need
+ * client handling; the API resolves them transparently.
  *
- * If `forceTool` is provided, we set tool_choice to force that tool. The first
- * occurrence of that tool's input is returned. Server tools (web_search) are
- * still permitted; the API resolves them transparently.
+ * Every call site gets the same truncation contract, regardless of transport:
+ *   - `truncated` is true whenever stop_reason === 'max_tokens'.
+ *   - If `forceTool` was set and the tool never appeared in the response
+ *     because generation was cut off first, `toolUse` is null rather than
+ *     throwing — a max_tokens cutoff is a partial result, not a contract
+ *     violation, and callers should treat it as first-class, resumable/
+ *     retryable state (checkpoint what's there, retry, or fall back)
+ *     instead of the pipeline silently losing the work already done.
+ *   - `toolUse` can also be non-null but truncated: the tool_use block
+ *     appeared but its `input` may be missing fields the model ran out of
+ *     room to emit. `truncated` tells the caller to validate defensively
+ *     rather than trust the schema blindly (see researcher.js's
+ *     normalizeReport for the pattern).
+ *   - Any other missing-tool stop_reason (e.g. end_turn) is still a genuine
+ *     contract violation and throws.
  *
  * Do NOT pass `budget` if this call is wrapped in `runWithWebSearchRetry` and
  * the caller's `onAttempt` already increments the budget — that would double-
  * count tokens and executor calls.
  */
-async function runStructuredCall({
+async function runModelCall({
   client,
   system,
   messages,
@@ -221,6 +243,9 @@ async function runStructuredCall({
   maxTokens = 2400,
   budget,
   timeoutMs = SDK_REQUEST_TIMEOUT_MS,
+  thinking,
+  effort,
+  streaming = false,
 }) {
   if (!client) throw new Error('client is required');
   if (!Array.isArray(messages) || messages.length === 0) {
@@ -234,6 +259,12 @@ async function runStructuredCall({
     messages,
     tools,
   };
+  if (thinking) {
+    params.thinking = thinking;
+  }
+  if (effort) {
+    params.output_config = { ...(params.output_config || {}), effort };
+  }
   if (forceTool) {
     params.tool_choice = { type: 'tool', name: forceTool };
   }
@@ -242,9 +273,12 @@ async function runStructuredCall({
   // per-attempt backstop and wall-clock cap track it so a longer SDK timeout
   // isn't strangled by a shorter queue cap.
   const perAttemptTimeoutMs = timeoutMs + ATTEMPT_BACKSTOP_BUFFER_MS;
-  const wallClockMaxMs = timeoutMs + 30_000;
+  const wallClockMaxMs = timeoutMs + WALL_CLOCK_RETRY_BUDGET_MS;
   const response = await apiQueue.enqueue(
-    (signal) => client.messages.create(params, { timeout: timeoutMs, signal }),
+    (signal) =>
+      streaming
+        ? client.messages.stream(params, { timeout: timeoutMs, signal }).finalMessage()
+        : client.messages.create(params, { timeout: timeoutMs, signal }),
     { perAttemptTimeoutMs, wallClockMaxMs }
   );
   const usage = tokenUsage(response);
@@ -254,18 +288,42 @@ async function runStructuredCall({
   }
 
   const web_searches = extractWebSearches(response);
+  const truncated = response.stop_reason === 'max_tokens';
 
   if (forceTool) {
     const toolUse = extractToolUse(response, forceTool);
     if (!toolUse) {
+      if (truncated) {
+        return { response, toolUse: null, usage, web_searches, truncated };
+      }
       throw new Error(
         `Expected forced tool call \`${forceTool}\`; got stop_reason=${response.stop_reason}`
       );
     }
-    return { response, toolUse, usage, web_searches };
+    return { response, toolUse, usage, web_searches, truncated };
   }
 
-  return { response, usage, web_searches };
+  return { response, usage, web_searches, truncated };
+}
+
+/**
+ * Non-streaming structured call. Default for research/debate/working-group
+ * calls whose max_tokens ceiling comfortably fits under the non-streaming
+ * SDK's completion timeout. See runModelCall for the shared truncation
+ * contract (`truncated`, nullable `toolUse`).
+ */
+async function runStructuredCall(opts) {
+  return runModelCall({ ...opts, streaming: false });
+}
+
+/**
+ * Streaming counterpart to runStructuredCall, for calls that need genuine
+ * max_tokens headroom (the non-streaming SDK path times out well before a
+ * large adaptive-thinking + structured-output response can complete). Same
+ * contract and params as runStructuredCall; swap freely between the two.
+ */
+async function runStructuredStreamingCall(opts) {
+  return runModelCall({ ...opts, streaming: true });
 }
 
 function webFetchTool({ maxUses = 6 } = {}) {
@@ -290,6 +348,8 @@ module.exports = {
   isRetryableWebSearchError,
   runWithWebSearchRetry,
   tokenUsage,
+  runModelCall,
   runStructuredCall,
+  runStructuredStreamingCall,
   getStats: apiQueue.getStats,
 };

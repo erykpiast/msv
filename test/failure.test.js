@@ -6,6 +6,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { classifyError, sanitiseMessage, actionableMessage, CancellationError } = require('../src/failure');
+const { APIConnectionError, APIConnectionTimeoutError } = require('@anthropic-ai/sdk');
 
 test('500 status → anthropic_unavailable', () => {
   const err = Object.assign(new Error('Internal Server Error'), { status: 500 });
@@ -34,6 +35,17 @@ test('ECONNRESET → anthropic_unavailable', () => {
 
 test('EPIPE → anthropic_unavailable', () => {
   assert.equal(classifyError(Object.assign(new Error(), { code: 'EPIPE' })), 'anthropic_unavailable');
+});
+
+test('APIConnectionTimeoutError ("Request timed out.") → anthropic_unavailable, not internal_error', () => {
+  // Regression: this has no .status and no .code, so a real 60s SDK request
+  // timeout used to fall through classifyError's checks and land on
+  // 'internal_error', masking an ordinary transient outage as a code bug.
+  assert.equal(classifyError(new APIConnectionTimeoutError()), 'anthropic_unavailable');
+});
+
+test('APIConnectionError (generic) → anthropic_unavailable', () => {
+  assert.equal(classifyError(new APIConnectionError({ message: 'Connection error.' })), 'anthropic_unavailable');
 });
 
 test('nested cause code → anthropic_unavailable', () => {

@@ -14,6 +14,7 @@ const {
   IDEATION_JSON_SCHEMA,
   ADVERSARIAL_MARK_JSON_SCHEMA,
   ALIGNMENT_JSON_SCHEMA,
+  ALIGNMENT_MOVE_TYPES,
   OBSERVATION_JSON_SCHEMA,
   PAIR_MOVE_BUDGET,
   moveId,
@@ -25,6 +26,15 @@ const {
   detectConcessionTermination,
 } = require('../moves');
 const { appendLog } = require('../storage');
+
+// All seven runStructuredCall sites in this file run concurrently, one per
+// persona per territory (up to CONCURRENCY-many at once — see api_queue.js) —
+// the working-groups stage that leans hardest on the SDK's default 60s
+// timeout / 90s wall-clock budget. A production run hit a correlated
+// multi-minute upstream stall that took out an entire batch simultaneously;
+// that default budget only bought a single retry. 120s mirrors
+// coordinator.js's and discovery.js's precedent for adaptive-thinking calls.
+const WORKING_GROUP_TIMEOUT_MS = 120_000;
 
 const EMIT_MOVE_TOOL = {
   name: 'emit_move',
@@ -62,6 +72,15 @@ function summarizeHistoryForPrompt(history) {
         }] ${m.content}`
     )
     .join('\n');
+}
+
+// Builds the "your previous response was cut off" clause appended to rejection
+// feedback when max_tokens truncation is the likely cause of the rejection.
+// `detail` names what got cut off and how to recover (varies per call site);
+// returns '' when not truncated so it drops cleanly out of the surrounding
+// error template. Shared by every emit_* retry site in this file.
+function truncationNote(truncated, detail) {
+  return truncated ? ` Your previous response was cut off (max_tokens) before ${detail}.` : '';
 }
 
 function buildRejectionFeedback(attempt, toolName, rawInput, errorText) {
@@ -166,12 +185,16 @@ async function emitOneMove({
     ...feedbackMessages,
   ];
 
-  const { response, toolUse, usage, web_searches } = await runStructuredCall({
+  const { response, toolUse, usage, web_searches, truncated } = await runStructuredCall({
     client,
     model,
     budget,
+    thinking: { type: 'adaptive' },
     system,
-    maxTokens: 1400,
+    // 1400 -> 2400 (+71%): same emit_move tool/schema as runDebateMove; bumped
+    // in step with it rather than guessing an unrelated number.
+    maxTokens: 2400,
+    timeoutMs: WORKING_GROUP_TIMEOUT_MS,
     messages,
     tools: [EMIT_MOVE_TOOL],
     forceTool: 'emit_move',
@@ -184,6 +207,12 @@ async function emitOneMove({
     });
   }
 
+  // toolUse is null when generation was cut off (max_tokens) before the forced
+  // tool_use block ever appeared. Fall back to null rather than throwing on
+  // `.input` — the caller's validateContextualMove already rejects a null move
+  // and drives the existing retry-with-feedback loop.
+  const rawMove = toolUse ? toolUse.input : null;
+
   await appendLog(idea.id, logFile, {
     kind: 'response',
     payload: {
@@ -191,11 +220,12 @@ async function emitOneMove({
       persona_id: persona.id,
       stop_reason: response.stop_reason,
       usage,
-      raw_input: toolUse.input,
+      truncated,
+      raw_input: rawMove,
     },
   });
 
-  return { rawMove: toolUse.input, usage };
+  return { rawMove, usage, truncated };
 }
 
 async function emitPersonaMove({
@@ -276,14 +306,19 @@ async function emitPersonaMove({
         attempt,
         errors: validation.errors,
         raw_move: result.rawMove,
+        truncated: !!result.truncated,
       },
     });
 
+    // When max_tokens truncation is the likely cause (either the tool_use block
+    // never appeared, or it appeared but validation failed for missing fields),
+    // tell the model explicitly so the retry has a shot at fitting under budget.
+    const note = truncationNote(result.truncated, 'a complete move was emitted — be more concise this time');
     feedbackMessages = buildRejectionFeedback(
       attempt,
       'emit_move',
-      result.rawMove,
-      `Your move was rejected: ${validation.errors.join('; ')}. Emit a corrected move now via emit_move.`
+      result.rawMove || {},
+      `Your move was rejected: ${validation.errors.join('; ')}.${note} Emit a corrected move now via emit_move.`
     );
   }
 
@@ -446,12 +481,16 @@ async function runCrossPollinationReaction({
       'Pick the single claim where your tradition adds the most value and emit one reaction via emit_reaction.',
     ].filter(Boolean).join('\n');
 
-    const { response, toolUse, usage } = await runStructuredCall({
+    const { response, toolUse, usage, truncated } = await runStructuredCall({
       client,
       model,
       budget,
+      thinking: { type: 'adaptive' },
       system,
-      maxTokens: 1200,
+      // 1200 -> 2000 (+67%): no confirmed-truncation log data for this site,
+      // but same shape of risk as runAlignmentMove; conservative bump.
+      maxTokens: 2000,
+      timeoutMs: WORKING_GROUP_TIMEOUT_MS,
       messages: [
         { role: 'user', content: userContent },
         ...feedbackMessages,
@@ -460,10 +499,12 @@ async function runCrossPollinationReaction({
       forceTool: 'emit_reaction',
     });
 
-    const raw = toolUse.input;
+    // toolUse is null when max_tokens cut generation off before the forced
+    // tool_use block appeared; treat as a rejected reaction rather than crash.
+    const raw = toolUse ? toolUse.input : null;
     const shape = validateMoveShape(raw, { reactionOnly: true });
     const errors = [...shape.errors];
-    if (!validIds.has(raw.references_claim_id)) {
+    if (raw && !validIds.has(raw.references_claim_id)) {
       errors.push(`references_claim_id ${raw.references_claim_id} not in target claim set`);
     }
     if (errors.length === 0) {
@@ -491,14 +532,15 @@ async function runCrossPollinationReaction({
 
     await appendLog(idea.id, 'parse-errors', {
       kind: 'rejected_reaction',
-      payload: { persona_id: persona.id, attempt, errors, raw },
+      payload: { persona_id: persona.id, attempt, errors, raw, truncated: !!truncated },
     });
 
+    const note = truncationNote(truncated, 'a complete reaction was emitted — be more concise this time');
     feedbackMessages = buildRejectionFeedback(
       attempt,
       'emit_reaction',
-      raw,
-      `Your reaction was rejected: ${errors.join('; ')}. Emit a corrected reaction via emit_reaction.`
+      raw || {},
+      `Your reaction was rejected: ${errors.join('; ')}.${note} Emit a corrected reaction via emit_reaction.`
     );
   }
 
@@ -589,32 +631,62 @@ async function runIdeation({ client, idea, model, budget, territory, persona }) 
   });
 
   const system = buildSystemPrompt(PERSONA_IDEATION, persona);
+  const baseUserContent = `Territory: ${territory.name}\n\nTerritory description: ${territory.description}\n\nTopic: ${idea.raw_capture}\n\nGenerate 4–6 candidate research questions for this territory from your tradition's perspective. Invoke emit_candidate_questions.`;
 
-  const { response, toolUse, usage } = await runStructuredCall({
-    client,
-    model,
-    budget,
-    system,
-    maxTokens: 3000,
-    messages: [
-      {
-        role: 'user',
-        content: `Territory: ${territory.name}\n\nTerritory description: ${territory.description}\n\nTopic: ${idea.raw_capture}\n\nGenerate 4–6 candidate research questions for this territory from your tradition's perspective. Invoke emit_candidate_questions.`,
-      },
-    ],
-    tools: [EMIT_CANDIDATE_QUESTIONS_TOOL],
-    forceTool: 'emit_candidate_questions',
-  });
+  // No pre-existing retry loop at this call site; this reuses the same
+  // buildRejectionFeedback + bounded-attempts mechanism used elsewhere in this
+  // file rather than inventing new infra.
+  let feedbackMessages = [];
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const { response, toolUse, usage, truncated } = await runStructuredCall({
+      client,
+      model,
+      budget,
+      thinking: { type: 'adaptive' },
+      system,
+      // 3000 -> 5000 (+67%): array of up to 8 ideation items; no confirmed
+      // truncation log for this site, conservative bump per instructions.
+      maxTokens: 5000,
+      timeoutMs: WORKING_GROUP_TIMEOUT_MS,
+      messages: [{ role: 'user', content: baseUserContent }, ...feedbackMessages],
+      tools: [EMIT_CANDIDATE_QUESTIONS_TOOL],
+      forceTool: 'emit_candidate_questions',
+    });
 
-  await appendLog(idea.id, logFile, {
-    kind: 'response',
-    payload: { persona_id: persona.id, stop_reason: response.stop_reason, usage },
-  });
+    await appendLog(idea.id, logFile, {
+      kind: 'response',
+      payload: { persona_id: persona.id, stop_reason: response.stop_reason, usage, truncated },
+    });
 
-  return {
-    persona_id: persona.id,
-    candidate_questions: toolUse.input.candidate_questions || [],
-  };
+    const rawInput = toolUse ? toolUse.input : null;
+    const candidateQuestions = Array.isArray(rawInput?.candidate_questions)
+      ? rawInput.candidate_questions
+      : null;
+    if (candidateQuestions && candidateQuestions.length > 0) {
+      return { persona_id: persona.id, candidate_questions: candidateQuestions };
+    }
+
+    await appendLog(idea.id, 'parse-errors', {
+      kind: 'rejected_ideation',
+      payload: { persona_id: persona.id, attempt, truncated, raw_input: rawInput },
+    });
+
+    const note = truncationNote(
+      truncated,
+      'candidate_questions completed — emit fewer, more concise questions this time'
+    );
+    feedbackMessages = buildRejectionFeedback(
+      attempt,
+      'emit_candidate_questions',
+      rawInput || {},
+      `Your candidate_questions were missing or empty.${note} Emit at least 2 candidate research questions now via emit_candidate_questions.`
+    );
+  }
+
+  // Two failed attempts: return an empty list rather than propagate a broken
+  // partial payload. Downstream (working_group.js) tolerates zero candidates
+  // from a persona without crashing.
+  return { persona_id: persona.id, candidate_questions: [] };
 }
 
 async function runAdversarialMark({
@@ -638,32 +710,56 @@ async function runAdversarialMark({
   const questionList = candidateQuestions
     .map((c) => `- ${c.candidate_id}: "${c.question}" (predicted_confidence: ${c.predicted_confidence})`)
     .join('\n');
+  const baseUserContent = `Territory: ${territory.name}\n\nThe other persona's candidate questions:\n${questionList}\n\nFor each, mark whether you could answer it from priors. Invoke emit_adversarial_marks.`;
 
-  const { response, toolUse, usage } = await runStructuredCall({
-    client,
-    model,
-    budget,
-    system,
-    maxTokens: 2000,
-    messages: [
-      {
-        role: 'user',
-        content: `Territory: ${territory.name}\n\nThe other persona's candidate questions:\n${questionList}\n\nFor each, mark whether you could answer it from priors. Invoke emit_adversarial_marks.`,
-      },
-    ],
-    tools: [EMIT_ADVERSARIAL_MARKS_TOOL],
-    forceTool: 'emit_adversarial_marks',
-  });
+  // No pre-existing retry loop here either; reuse the same bounded-attempts +
+  // buildRejectionFeedback mechanism as runIdeation/emitPersonaMove.
+  let feedbackMessages = [];
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const { response, toolUse, usage, truncated } = await runStructuredCall({
+      client,
+      model,
+      budget,
+      thinking: { type: 'adaptive' },
+      system,
+      // 2000 -> 3200 (+60%): no confirmed-truncation data for this site,
+      // conservative bump per instructions.
+      maxTokens: 3200,
+      timeoutMs: WORKING_GROUP_TIMEOUT_MS,
+      messages: [{ role: 'user', content: baseUserContent }, ...feedbackMessages],
+      tools: [EMIT_ADVERSARIAL_MARKS_TOOL],
+      forceTool: 'emit_adversarial_marks',
+    });
 
-  await appendLog(idea.id, logFile, {
-    kind: 'response',
-    payload: { persona_id: persona.id, stop_reason: response.stop_reason, usage },
-  });
+    await appendLog(idea.id, logFile, {
+      kind: 'response',
+      payload: { persona_id: persona.id, stop_reason: response.stop_reason, usage, truncated },
+    });
 
-  return {
-    persona_id: persona.id,
-    marks: toolUse.input.marks || [],
-  };
+    const rawInput = toolUse ? toolUse.input : null;
+    // marks may legitimately be an empty array (schema has no minItems), but a
+    // truncated/missing tool_use block means we can't trust it was intentional.
+    if (rawInput && Array.isArray(rawInput.marks) && !truncated) {
+      return { persona_id: persona.id, marks: rawInput.marks };
+    }
+
+    await appendLog(idea.id, 'parse-errors', {
+      kind: 'rejected_adversarial_marks',
+      payload: { persona_id: persona.id, attempt, truncated, raw_input: rawInput },
+    });
+
+    const note = truncationNote(truncated, 'marks completed — be more concise this time');
+    feedbackMessages = buildRejectionFeedback(
+      attempt,
+      'emit_adversarial_marks',
+      rawInput || {},
+      `Your marks were missing or malformed.${note} Emit emit_adversarial_marks again now.`
+    );
+  }
+
+  // Two failed attempts: candidates remain unmarked, matching the existing
+  // partial_failure tolerance in working_group.js's adversarial sub-stage.
+  return { persona_id: persona.id, marks: [] };
 }
 
 async function runAlignmentMove({
@@ -696,28 +792,74 @@ async function runAlignmentMove({
     ? '(no prior alignment moves)'
     : history.map((m) => `${m.move_id} [${m.by_persona_id} · ${m.type}]: ${m.content}`).join('\n');
 
-  const { response, toolUse, usage } = await runStructuredCall({
-    client,
-    model,
-    budget,
-    system,
-    maxTokens: 1200,
-    messages: [
-      {
-        role: 'user',
-        content: `Territory: ${territory.name}\n\nCandidate questions with adversarial marks:\n${questionList}\n\nAlignment debate so far:\n${historyText}\n\nEmit your next alignment move via emit_alignment_move.`,
-      },
-    ],
-    tools: [EMIT_ALIGNMENT_MOVE_TOOL],
-    forceTool: 'emit_alignment_move',
-  });
+  const baseUserContent = `Territory: ${territory.name}\n\nCandidate questions with adversarial marks:\n${questionList}\n\nAlignment debate so far:\n${historyText}\n\nEmit your next alignment move via emit_alignment_move.`;
 
-  await appendLog(idea.id, logFile, {
-    kind: 'response',
-    payload: { persona_id: persona.id, stop_reason: response.stop_reason, usage },
-  });
+  // Confirmed production truncation (t_005 pair-t_005-alignment.jsonl): this
+  // persona hit stop_reason=max_tokens at exactly usage.output=1200, the old
+  // ceiling. working_group.js's alignment loop does zero validation on the
+  // returned move (`if (!move) break;` only) — a truncated-but-present
+  // tool_use here used to become a silently-accepted broken move. Retry once
+  // on truncation before returning, using the same bounded-attempts +
+  // buildRejectionFeedback mechanism as the other call sites in this file.
+  let feedbackMessages = [];
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const { response, toolUse, usage, truncated } = await runStructuredCall({
+      client,
+      model,
+      budget,
+      thinking: { type: 'adaptive' },
+      system,
+      // 1200 -> 2400: doubled, matching coordinator.js's budget for a
+      // comparable single-turn structured call. No output-usage headroom data
+      // beyond "hit the 1200 ceiling exactly", so this is a judgement call
+      // rather than a measured multiplier.
+      maxTokens: 2400,
+      timeoutMs: WORKING_GROUP_TIMEOUT_MS,
+      messages: [{ role: 'user', content: baseUserContent }, ...feedbackMessages],
+      tools: [EMIT_ALIGNMENT_MOVE_TOOL],
+      forceTool: 'emit_alignment_move',
+    });
 
-  return toolUse.input || null;
+    await appendLog(idea.id, logFile, {
+      kind: 'response',
+      payload: { persona_id: persona.id, stop_reason: response.stop_reason, usage, truncated },
+    });
+
+    const rawInput = toolUse ? toolUse.input : null;
+    const hasRequiredFields =
+      rawInput &&
+      typeof rawInput.type === 'string' &&
+      ALIGNMENT_MOVE_TYPES.includes(rawInput.type) &&
+      typeof rawInput.content === 'string' &&
+      rawInput.content.trim().length > 0;
+
+    if (hasRequiredFields && !truncated) {
+      return rawInput;
+    }
+
+    await appendLog(idea.id, 'parse-errors', {
+      kind: 'rejected_alignment_move',
+      payload: { persona_id: persona.id, attempt, truncated, raw_input: rawInput },
+    });
+
+    if (attempt < 2) {
+      const note = truncationNote(truncated, 'a complete move was emitted — be more concise this time');
+      const errorText = hasRequiredFields
+        ? `Your alignment move was cut off before it completed.${note}`
+        : `Your alignment move was missing required fields (type, content).${note}`;
+      feedbackMessages = buildRejectionFeedback(
+        attempt,
+        'emit_alignment_move',
+        rawInput || {},
+        `${errorText} Emit a corrected alignment move now via emit_alignment_move.`
+      );
+    }
+  }
+
+  // Two failed attempts: return null. The caller (working_group.js) already
+  // treats a null move as "end this alignment debate early" (`if (!move)
+  // break;`) — safe, unlike propagating a truncated/incomplete move as valid.
+  return null;
 }
 
 async function runObservation({
@@ -744,12 +886,16 @@ async function runObservation({
   const allReportText = allReports.map(reportSummary).join('\n\n');
   const assignedReportText = reportSummary(report);
 
-  const { response, toolUse, usage } = await runStructuredCall({
+  const { response, toolUse, usage, truncated } = await runStructuredCall({
     client,
     model,
     budget,
+    thinking: { type: 'adaptive' },
     system,
-    maxTokens: 2000,
+    // 2000 -> 3200 (+60%): array of up to 6 observations; no confirmed
+    // truncation data for this site, conservative bump per instructions.
+    maxTokens: 3200,
+    timeoutMs: WORKING_GROUP_TIMEOUT_MS,
     messages: [
       {
         role: 'user',
@@ -762,12 +908,24 @@ async function runObservation({
 
   await appendLog(idea.id, logFile, {
     kind: 'response',
-    payload: { persona_id: persona.id, report_id: report.report_id, stop_reason: response.stop_reason, usage },
+    payload: { persona_id: persona.id, report_id: report.report_id, stop_reason: response.stop_reason, usage, truncated },
   });
 
-  return {
-    observations: toolUse.input.observations || [],
-  };
+  const rawInput = toolUse ? toolUse.input : null;
+  const observations = Array.isArray(rawInput?.observations) ? rawInput.observations : null;
+  // Don't let a truncated/missing tool_use silently return an empty or
+  // partial observations list as if it were a genuine result. working_group.js
+  // already retries this call once on a thrown error (Promise.allSettled +
+  // single retry, see its observation sub-stage) and synthesizes a fallback
+  // observation if the retry also fails — throwing here reuses that existing
+  // mechanism instead of building a second one.
+  if (truncated || !observations || observations.length === 0) {
+    throw new Error(
+      `runObservation truncated or malformed for persona ${persona.id} report ${report.report_id} (stop_reason=${response.stop_reason})`
+    );
+  }
+
+  return { observations };
 }
 
 async function runDebateMove({
@@ -819,12 +977,16 @@ async function runDebateMove({
     'Emit your move via emit_move now.',
   ].join('\n');
 
-  const { response, toolUse, usage } = await runStructuredCall({
+  const { response, toolUse, usage, truncated } = await runStructuredCall({
     client,
     model,
     budget,
+    thinking: { type: 'adaptive' },
     system,
-    maxTokens: 1400,
+    // 1400 -> 2400 (+71%): same emit_move tool/schema as emitOneMove; bumped
+    // in step with it.
+    maxTokens: 2400,
+    timeoutMs: WORKING_GROUP_TIMEOUT_MS,
     messages: [{ role: 'user', content: userContent }],
     tools: [EMIT_MOVE_TOOL],
     forceTool: 'emit_move',
@@ -832,10 +994,17 @@ async function runDebateMove({
 
   await appendLog(idea.id, logFile, {
     kind: 'response',
-    payload: { persona_id: persona.id, stop_reason: response.stop_reason, usage },
+    payload: { persona_id: persona.id, stop_reason: response.stop_reason, usage, truncated },
   });
 
-  return toolUse.input || null;
+  // toolUse is null when max_tokens cut generation off before the forced
+  // tool_use block appeared — return null rather than throw on `.input`.
+  // working_group.js's caller already treats a null move as "stop this turn"
+  // (opening: filtered via `!settled.value`; sequential turns: `if (!move)
+  // break;`), and a truncated-but-present move with missing required fields
+  // is already caught by its validateDebateMove -> validateMoveShape check,
+  // which drives the existing repromptReason retry-once path there.
+  return toolUse ? toolUse.input || null : null;
 }
 
 module.exports = {
@@ -847,4 +1016,9 @@ module.exports = {
   runAlignmentMove,
   runObservation,
   runDebateMove,
+  // Exported for direct unit testing of the truncation/retry handling
+  // (emitPersonaMove is otherwise only reachable through runPairDebate's
+  // parallel-opening + sequential-turn orchestration).
+  emitOneMove,
+  emitPersonaMove,
 };

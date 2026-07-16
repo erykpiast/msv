@@ -150,6 +150,54 @@ test('runPipeline skips stages 1–6 when resuming at stage 7 (synthesis)', asyn
 });
 
 // ---------------------------------------------------------------------------
+// 1b. Truncated synthesis: partial persisted, stage not advanced, resumable
+// ---------------------------------------------------------------------------
+
+test('truncated synthesizer response leaves stage at 7_synthesis, persists partial synthesis, and is resumable', async () => {
+  const idea = buildResumableIdea();
+  idea.investigation.progress = {
+    current_stage: '7_synthesis',
+    working_groups: {},
+  };
+  await writeIdea(idea);
+
+  const client = createMockClient({ truncateSynthesis: true });
+
+  const result = await runOne(idea, client, { cancellationToken: { requested: false } });
+  assert.equal(result.ok, true,
+    `run should report ok even on a truncated synthesis; got: ${JSON.stringify(result)}`);
+
+  const afterTruncation = await readIdea(idea.id);
+  assert.equal(afterTruncation.investigation.synthesis.truncated, true);
+  assert.equal(afterTruncation.investigation.progress.current_stage, '7_synthesis',
+    'stage must not advance to complete on a truncated synthesis');
+  assert.notEqual(afterTruncation.status, 'ready');
+  assert.ok(afterTruncation.investigation.last_failure, 'last_failure must be populated');
+  assert.equal(afterTruncation.investigation.last_failure.stage, '7_synthesis');
+  // Partial data survives even though the trailing fields were cut off.
+  assert.ok(Array.isArray(afterTruncation.investigation.synthesis.headline_findings));
+  assert.equal(afterTruncation.investigation.synthesis.key_references, null);
+  assert.equal(afterTruncation.investigation.synthesis.next_pass_proposals, null);
+
+  // Resuming re-enters only stage 7 and this time completes normally.
+  const reloaded = await readIdea(idea.id);
+  const resumedClient = createMockClient();
+  const callsBefore = resumedClient.callCount();
+  const resumeResult = await runOne(reloaded, resumedClient, { cancellationToken: { requested: false } });
+  assert.equal(resumeResult.ok, true);
+
+  const final = await readIdea(idea.id);
+  assert.equal(final.status, 'ready');
+  assert.equal(final.investigation.last_failure, null);
+  assert.equal(final.investigation.synthesis.truncated, false);
+
+  const breakdown = resumedClient.callsByStageSince(callsBefore);
+  const unexpected = Object.keys(breakdown).filter((t) => t !== 'emit_synthesis');
+  assert.deepEqual(unexpected, [],
+    `resume should only re-run synthesis; got: ${JSON.stringify(breakdown)}`);
+});
+
+// ---------------------------------------------------------------------------
 // 2. Failure mid-pipeline persists last_failure with the right shape
 // ---------------------------------------------------------------------------
 
