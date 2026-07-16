@@ -1,6 +1,31 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 
+// File written into ideaDir once the dev server has actually bound a port.
+// event_relay.js reads it to discover where to POST live events when the
+// default port (5180) was unavailable and Vite fell back to another one —
+// without this, two concurrent `msv inspect` sessions silently strand the
+// second one with a frozen initial snapshot (relay keeps posting to 5180).
+const PORT_FILE_NAME = '.inspect-port.json';
+
+async function writePortAnnouncement(ideaDir, port) {
+  const filePath = path.join(ideaDir, PORT_FILE_NAME);
+  try {
+    await fs.writeFile(filePath, JSON.stringify({ port, pid: process.pid }));
+  } catch (err) {
+    process.stderr.write(`failed to write inspect port announcement: ${err.message}\n`);
+  }
+  return filePath;
+}
+
+async function removePortAnnouncement(filePath) {
+  try {
+    await fs.unlink(filePath);
+  } catch {
+    // Best-effort cleanup; ENOENT (already gone) is fine.
+  }
+}
+
 function viewMiddlewarePlugin(ideaDir) {
   // A Vite plugin's configureServer hook lets us register middlewares
   // BEFORE Vite's built-in SPA fallback / static handler. Without this,
@@ -132,6 +157,19 @@ async function startInspectServer({ ideaDir, ideaId, port }) {
   });
 
   await server.listen();
+
+  const address = server.httpServer?.address?.();
+  const resolvedPort = typeof address === 'object' && address ? address.port : null;
+  const portFilePath = resolvedPort ? await writePortAnnouncement(ideaDir, resolvedPort) : null;
+
+  if (portFilePath) {
+    const originalClose = server.close.bind(server);
+    server.close = async (...args) => {
+      await removePortAnnouncement(portFilePath);
+      return originalClose(...args);
+    };
+  }
+
   return server;
 }
 
