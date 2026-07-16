@@ -4,7 +4,58 @@ const { runStructuredStreamingCall } = require('../anthropic');
 const { SYNTHESIZER } = require('./prompts');
 const { appendLog } = require('../storage');
 
-const EMIT_SYNTHESIS_TOOL = {
+// Volume-driven maxItems values (sections, key_findings, key_references) scale
+// with investigation size instead of being fixed — see buildEmitSynthesisTool.
+// Floors match today's minItems (so a small investigation never regresses
+// below what the fixed schema already guaranteed); ceilings sit well above
+// today's fixed maxItems (so a large investigation can visibly grow beyond
+// what the old constants allowed). Each entry's `divisor` is applied to the
+// signal named by `signal` (nodeCount or totalSourceCount) via `scale()`
+// below — one shared formula shape instead of one function per field.
+const SCALE_CONFIG = {
+  sections: { signal: 'nodeCount', divisor: 5, floor: 2, ceiling: 12 },
+  // Findings-per-source density: top 10% of deduplicated sources.
+  keyFindings: { signal: 'totalSourceCount', divisor: 10, floor: 1, ceiling: 10 },
+  keyReferences: { signal: 'totalSourceCount', divisor: 3, floor: 3, ceiling: 40 },
+  // renderFindings's source cap is derived from the same totalSourceCount
+  // signal as keyReferences above, so the two scaling points can't drift apart.
+  sourceCap: { signal: 'totalSourceCount', divisor: 2, floor: 30, ceiling: 150 },
+};
+
+function clamp(n, lo, hi) {
+  return Math.min(hi, Math.max(lo, n));
+}
+
+function scale(signals, field) {
+  const { signal, divisor, floor, ceiling } = SCALE_CONFIG[field];
+  return clamp(Math.ceil((signals[signal] || 0) / divisor), floor, ceiling);
+}
+
+// Computes every volume-driven limit from the investigation's size signals in
+// one place, so buildEmitSynthesisTool and renderFindings/runSynthesizer's
+// logging all read from the same numbers instead of re-deriving or
+// re-walking them independently.
+function computeSynthesisLimits({ nodeCount = 0, totalSourceCount = 0 } = {}) {
+  const signals = { nodeCount, totalSourceCount };
+  return {
+    sectionsMax: scale(signals, 'sections'),
+    keyFindingsMax: scale(signals, 'keyFindings'),
+    keyReferencesMax: scale(signals, 'keyReferences'),
+    sourceCap: scale(signals, 'sourceCap'),
+  };
+}
+
+// Built per-call from the investigation's size signals rather than kept as a
+// static module-level constant, so `sections`/`key_findings`/`key_references`
+// maxItems scale with how much was actually gathered (see issue #22).
+// `headline_findings`, `tension_points`, `next_pass_proposals`, and
+// `open_tensions` are intentionally left fixed: they're bounded by curated
+// intent (a handful of highlights) or genuine disagreement/gap counts, not by
+// investigation volume — scaling them would add noise, not signal.
+function buildEmitSynthesisTool(sizeSignals) {
+  const { sectionsMax, keyFindingsMax, keyReferencesMax } = computeSynthesisLimits(sizeSignals);
+
+  return {
   name: 'emit_synthesis',
   description:
     'Emit the structured report: sections with findings, tension points, key references, and next-pass proposals.',
@@ -26,7 +77,7 @@ const EMIT_SYNTHESIS_TOOL = {
         type: 'array',
         description: 'Broad thematic areas, each with key findings. List broad areas first, then the most specific/surprising findings within each.',
         minItems: 2,
-        maxItems: 6,
+        maxItems: sectionsMax,
         items: {
           type: 'object',
           required: ['area_title', 'area_summary', 'key_findings'],
@@ -37,7 +88,7 @@ const EMIT_SYNTHESIS_TOOL = {
             key_findings: {
               type: 'array',
               minItems: 1,
-              maxItems: 5,
+              maxItems: keyFindingsMax,
               items: {
                 type: 'object',
                 required: ['content', 'confidence'],
@@ -82,7 +133,7 @@ const EMIT_SYNTHESIS_TOOL = {
       key_references: {
         type: 'array',
         description: 'The most relevant sources cited in the investigation. Only include sources that materially shaped the findings.',
-        maxItems: 8,
+        maxItems: keyReferencesMax,
         items: {
           type: 'object',
           required: ['url', 'title', 'summary', 'key_observations'],
@@ -159,7 +210,8 @@ const EMIT_SYNTHESIS_TOOL = {
       },
     },
   },
-};
+  };
+}
 
 function renderForum(forum) {
   return (forum.nodes || [])
@@ -200,7 +252,11 @@ function renderQuestionLandscape(pairDebates) {
 
 const QUALITY_ORDER = { primary: 0, secondary: 1, indirect: 2 };
 
-function renderFindings(pairDebates) {
+// Dedup pass shared by renderFindings and the synthesizer's size-signal
+// computation, so the schema builder's key_references.maxItems and this
+// module's source-list cap are derived from the same totalSourceCount rather
+// than two independently-drifting counts.
+function collectFindingRefs(pairDebates) {
   const seen = new Set();
   const refs = [];
   for (const pd of (pairDebates || [])) {
@@ -220,8 +276,19 @@ function renderFindings(pairDebates) {
       }
     }
   }
+  return refs;
+}
+
+// `refs` defaults to a fresh collectFindingRefs pass, but callers that already
+// deduplicated (e.g. runSynthesizer, which also needs the count for its size
+// signals) can pass theirs in to avoid re-running the dedup twice.
+function renderFindings(pairDebates, refs = collectFindingRefs(pairDebates)) {
   refs.sort((a, b) => (QUALITY_ORDER[a.quality] ?? 3) - (QUALITY_ORDER[b.quality] ?? 3));
-  return refs.slice(0, 30);
+  // The current fixed cap (30) is now a floor, not a ceiling: investigations
+  // with far more than 30 usable sources aren't clipped before the model ever
+  // sees them (see computeSynthesisLimits's sourceCap).
+  const { sourceCap } = computeSynthesisLimits({ totalSourceCount: refs.length });
+  return refs.slice(0, sourceCap);
 }
 
 function renderFindingsText(refs) {
@@ -244,16 +311,32 @@ async function runSynthesizer({ client, idea, model, budget, forum, personas, pa
   const personaDump = renderPersonas(personas);
   const questionLandscape = renderQuestionLandscape(pairDebates);
   const deadEnds = renderDeadEnds(forum);
-  const findingRefs = renderFindings(pairDebates);
+  const nodeCount = forum.nodes?.length || 0;
+  // Same size signals feed both the source-list cap (renderFindings) and the
+  // schema's volume-driven maxItems (buildEmitSynthesisTool), so the two
+  // scaling points can't drift apart.
+  const collectedRefs = collectFindingRefs(pairDebates);
+  const totalSourceCount = collectedRefs.length;
+  const sizeSignals = { nodeCount, totalSourceCount };
+  const limits = computeSynthesisLimits(sizeSignals);
+  const findingRefs = renderFindings(pairDebates, collectedRefs);
   const findingsDump = renderFindingsText(findingRefs);
+  const emitSynthesisTool = buildEmitSynthesisTool(sizeSignals);
 
   await appendLog(idea.id, 'synthesizer', {
     kind: 'request',
     payload: {
-      node_count: forum.nodes?.length || 0,
+      node_count: nodeCount,
       dead_end_count: (forum.dead_end_questions || []).length,
       persona_count: personas.length,
       finding_ref_count: findingRefs.length,
+      // Coverage: how many deduplicated sources existed vs. how many made it
+      // into the prompt, so a still-binding cap on a very large investigation
+      // stays visible in the log instead of silently disappearing.
+      source_available_count: totalSourceCount,
+      key_references_max: limits.keyReferencesMax,
+      sections_max: limits.sectionsMax,
+      key_findings_max: limits.keyFindingsMax,
     },
   });
 
@@ -287,7 +370,7 @@ async function runSynthesizer({ client, idea, model, budget, forum, personas, pa
         ].join('\n'),
       },
     ],
-    tools: [EMIT_SYNTHESIS_TOOL],
+    tools: [emitSynthesisTool],
     forceTool: 'emit_synthesis',
     // The synthesizer consumes the full forum, persona roster, and question
     // landscape in one shot, then emits up to a 32k-token tool call with xhigh
@@ -314,6 +397,10 @@ async function runSynthesizer({ client, idea, model, budget, forum, personas, pa
       headline_count: (payload.headline_findings || []).length,
       report_chars: (payload.report || '').length,
       section_count: (payload.sections || []).length,
+      // Coverage: sources available vs. actually emitted in key_references, so
+      // a remaining ceiling on a large investigation is diagnosable here.
+      source_available_count: totalSourceCount,
+      key_references_count: (payload.key_references || []).length,
       shape_issues: shapeIssues.length ? shapeIssues : undefined,
     },
   });
@@ -420,4 +507,5 @@ module.exports = {
   runSynthesizer,
   renderFindings,
   renderFindingsText,
+  buildEmitSynthesisTool,
 };
