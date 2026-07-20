@@ -127,6 +127,12 @@ async function readJsonFile(filePath) {
  *                   'ideation_complete', 'adversarial_complete',
  *                   'alignment_complete', 'researcher_complete',
  *                   'observation_complete', 'debate_complete', 'complete'.
+ *   versions      – map of current_stage value → short commit SHA of the app
+ *                   build that ran that stage, e.g. { '1_discovery': 'abcd123',
+ *                   '2_diversity': 'abcd123', '8_breadth': 'efgh567' }. A run
+ *                   paused and resumed under a different checkout accumulates
+ *                   one entry per stage as each runs, so the map shows exactly
+ *                   which version produced which part of the result.
  *   last_failure  – null on success; on failure:
  *                     {
  *                       reason: 'anthropic_unavailable' | 'user_cancelled' | 'internal_error',
@@ -163,6 +169,7 @@ function freshInvestigation() {
     },
     synthesis: null,
     progress: null,
+    versions: {},
     last_failure: null,
   };
 }
@@ -180,6 +187,7 @@ function normalizeLoadedIdea(idea) {
   // Ideas written by older code have both null; planResume treats that as "no
   // resume anchor" and falls back to fresh-run.
   if (!('progress' in inv)) inv.progress = null;
+  if (!('versions' in inv)) inv.versions = {};
   if (!('last_failure' in inv)) inv.last_failure = null;
   if (!inv.schema_version) {
     const firstDebate = Array.isArray(inv.pair_debates) ? inv.pair_debates[0] : null;
