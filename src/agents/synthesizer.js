@@ -340,7 +340,22 @@ async function runSynthesizer({ client, idea, model, budget, forum, personas, pa
     },
   });
 
-  const { response, toolUse, usage, truncated } = await runStructuredStreamingCall({
+  const messages = [
+    {
+      role: 'user',
+      content: [
+        `Original topic:\n${idea.raw_capture}`,
+        `\nPersona roster (for attribution):\n${personaDump}`,
+        `\nForum (ranked nodes):\n${forumDump}`,
+        `\nQuestion landscape (what each territory investigated):\n${questionLandscape}`,
+        `\nDead-end questions (research avenues with no useful findings):\n${deadEnds}`,
+        `\nSource reference list (cite as inline markdown links in findings):\n${findingsDump}`,
+        `\nProduce the final report. Invoke emit_synthesis.`,
+      ].join('\n'),
+    },
+  ];
+
+  const callArgs = {
     client,
     model,
     budget,
@@ -356,20 +371,7 @@ async function runSynthesizer({ client, idea, model, budget, forum, personas, pa
     // maxTokens can go. Raised from 10,000 after observing stop_reason:
     // 'max_tokens' silently truncate the structured payload at that ceiling.
     maxTokens: 32_000,
-    messages: [
-      {
-        role: 'user',
-        content: [
-          `Original topic:\n${idea.raw_capture}`,
-          `\nPersona roster (for attribution):\n${personaDump}`,
-          `\nForum (ranked nodes):\n${forumDump}`,
-          `\nQuestion landscape (what each territory investigated):\n${questionLandscape}`,
-          `\nDead-end questions (research avenues with no useful findings):\n${deadEnds}`,
-          `\nSource reference list (cite as inline markdown links in findings):\n${findingsDump}`,
-          `\nProduce the final report. Invoke emit_synthesis.`,
-        ].join('\n'),
-      },
-    ],
+    messages,
     tools: [emitSynthesisTool],
     forceTool: 'emit_synthesis',
     // The synthesizer consumes the full forum, persona roster, and question
@@ -378,15 +380,46 @@ async function runSynthesizer({ client, idea, model, budget, forum, personas, pa
     // caps) was tuned for the prior 10k-token Haiku call and was observed
     // timing out under the new profile; raised while we find the real ceiling.
     timeoutMs: 600_000,
-  });
+  };
+
+  let { response, toolUse, usage, truncated } = await runStructuredStreamingCall(callArgs);
 
   // toolUse is null when the call hit max_tokens before emitting the
   // emit_synthesis block at all; fall back to an empty payload so the
   // coerceArray/|| null fallbacks below produce a well-formed truncated result
   // rather than crashing on `.input` of null.
-  const payload = toolUse?.input || {};
+  let payload = toolUse?.input || {};
 
-  const shapeIssues = diagnosePayloadShape(payload);
+  let shapeIssues = diagnosePayloadShape(payload);
+
+  // Mirrors coordinator.js's truncation retry: a non-truncated response can
+  // still carry array fields written as XML-style `<parameter name="...">`
+  // pseudo-tool-call syntax instead of JSON (see issue #35 — reproduced twice
+  // in the same run even with thinking/effort already disabled above). One
+  // corrective retry is cheap relative to silently degrading to a report-only
+  // result with no structured findings.
+  if (shapeIssues.length && !truncated) {
+    await appendLog(idea.id, 'synthesizer', {
+      kind: 'malformed_payload_retry',
+      payload: { stop_reason: response.stop_reason, usage, issues: shapeIssues },
+    });
+    const retryMessages = [
+      ...messages,
+      { role: 'assistant', content: (response.content || []) },
+      {
+        role: 'user',
+        content:
+          'Your previous emit_synthesis call included XML-style `<parameter name="...">` tags inside array fields instead of plain JSON array items. Re-emit emit_synthesis now using valid JSON arrays only — no pseudo-tool-call syntax inside field values.',
+      },
+    ];
+    const retryResult = await runStructuredStreamingCall({ ...callArgs, messages: retryMessages });
+    response = retryResult.response;
+    toolUse = retryResult.toolUse;
+    usage = retryResult.usage;
+    truncated = retryResult.truncated;
+    payload = toolUse?.input || {};
+    shapeIssues = diagnosePayloadShape(payload);
+  }
 
   await appendLog(idea.id, 'synthesizer', {
     kind: 'response',

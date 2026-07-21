@@ -372,6 +372,128 @@ test('runSynthesizer reports truncated: falsy on a normal completion', async () 
   assert.ok(!result.truncated);
 });
 
+test('runSynthesizer retries once on a malformed (XML-pseudo-tool-call) payload and recovers on the retry', async () => {
+  // Reproduces issue #35: a non-truncated response whose array fields are
+  // stray XML-`<parameter>` strings instead of JSON arrays.
+  const malformedPayload = {
+    report: 'Mock. '.repeat(60),
+    headline_findings: '<parameter name="headline_findings">["A."]</parameter>',
+    open_tensions: [],
+    sections: '<parameter name="sections">[{"area_title":"A"}]</parameter>',
+  };
+  const goodPayload = {
+    report: 'Recovered. '.repeat(60),
+    headline_findings: ['A.', 'B.', 'C.'],
+    open_tensions: [],
+    sections: [
+      { area_title: 'A', area_summary: 's', key_findings: [{ content: 'c', confidence: 'high' }] },
+      { area_title: 'B', area_summary: 's', key_findings: [{ content: 'c', confidence: 'high' }] },
+    ],
+  };
+  let callCount = 0;
+  const streamCalls = [];
+  const client = {
+    messages: {
+      stream(params) {
+        callCount += 1;
+        streamCalls.push(params);
+        const input = callCount === 1 ? malformedPayload : goodPayload;
+        return {
+          async finalMessage() {
+            return {
+              stop_reason: 'tool_use',
+              content: [{ type: 'tool_use', id: 'mock', name: 'emit_synthesis', input }],
+              usage: { input_tokens: 10, output_tokens: 10 },
+            };
+          },
+        };
+      },
+    },
+  };
+  const bus = makeRecordingBus();
+  const inputs = buildSynthesizerInputs();
+
+  const result = await runSynthesizer({ client, bus, ...inputs });
+
+  assert.equal(callCount, 2);
+  assert.deepEqual(result.headline_findings, ['A.', 'B.', 'C.']);
+  assert.equal(result.sections.length, 2);
+  assert.equal(result.report, goodPayload.report);
+
+  // The retry's messages must include the corrective user turn.
+  const retryMessages = streamCalls[1].messages;
+  const lastMessage = retryMessages[retryMessages.length - 1];
+  assert.equal(lastMessage.role, 'user');
+  assert.match(lastMessage.content, /valid JSON/i);
+
+  const malformedLog = await readLog('i_test', 'synthesizer');
+  assert.ok(malformedLog.some((entry) => entry.kind === 'malformed_payload_retry'));
+});
+
+test('runSynthesizer falls back to the degraded result when the retry is also malformed', async () => {
+  const malformedPayload = {
+    report: 'Mock. '.repeat(60),
+    headline_findings: '<parameter name="headline_findings">["A."]</parameter>',
+    open_tensions: [],
+  };
+  const client = {
+    messages: {
+      stream() {
+        return {
+          async finalMessage() {
+            return {
+              stop_reason: 'tool_use',
+              content: [{ type: 'tool_use', id: 'mock', name: 'emit_synthesis', input: malformedPayload }],
+              usage: { input_tokens: 10, output_tokens: 10 },
+            };
+          },
+        };
+      },
+    },
+  };
+  const bus = makeRecordingBus();
+  const inputs = buildSynthesizerInputs();
+
+  const result = await runSynthesizer({ client, bus, ...inputs });
+
+  assert.deepEqual(result.headline_findings, []);
+  assert.equal(result.report, malformedPayload.report);
+
+  const malformedLog = await readLog('i_test', 'synthesizer');
+  assert.ok(malformedLog.some((entry) => entry.kind === 'malformed_payload_retry'));
+  assert.ok(malformedLog.some((entry) => entry.kind === 'malformed_payload'));
+});
+
+test('runSynthesizer does not retry a truncated (max_tokens) payload even if shape-diagnosed', async () => {
+  const partialPayload = {
+    headline_findings: ['Only headline made it in.'],
+  };
+  let callCount = 0;
+  const client = {
+    messages: {
+      stream() {
+        callCount += 1;
+        return {
+          async finalMessage() {
+            return {
+              stop_reason: 'max_tokens',
+              content: [{ type: 'tool_use', id: 'mock', name: 'emit_synthesis', input: partialPayload }],
+              usage: { input_tokens: 10, output_tokens: 32000 },
+            };
+          },
+        };
+      },
+    },
+  };
+  const bus = makeRecordingBus();
+  const inputs = buildSynthesizerInputs();
+
+  const result = await runSynthesizer({ client, bus, ...inputs });
+
+  assert.equal(callCount, 1);
+  assert.equal(result.truncated, true);
+});
+
 // ---------------------------------------------------------------------------
 // buildEmitSynthesisTool — schema scaling unit tests
 // ---------------------------------------------------------------------------
