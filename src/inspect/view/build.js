@@ -290,6 +290,7 @@ function buildSynthesis(loaderInput) {
     tension_points: coerceArray(synth.tension_points),
     key_references: coerceArray(synth.key_references),
     next_pass_proposals: coerceArray(synth.next_pass_proposals),
+    breadth: synth.breadth ?? undefined,
   };
 }
 

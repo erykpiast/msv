@@ -139,10 +139,12 @@ test('runPipeline skips stages 1–6 when resuming at stage 7 (synthesis)', asyn
   assert.ok(final.investigation.synthesis.sections.length >= 2,
     `synthesis.sections must have at least 2 entries; got ${final.investigation.synthesis.sections.length}`);
 
-  // Only synthesis should have called the API. A per-tool breakdown surfaces
-  // any unexpected stage call by tool name — far more diagnostic than a count.
+  // Only stages 7–8 should have called the API: the synthesizer (emit_synthesis)
+  // and the breadth stage (report_areas). A per-tool breakdown surfaces any
+  // unexpected earlier-stage call by tool name — far more diagnostic than a count.
   const breakdown = client.callsByStageSince(callsBefore);
-  const unexpected = Object.keys(breakdown).filter((t) => t !== 'emit_synthesis');
+  const lateStageCalls = new Set(['emit_synthesis', 'report_areas']);
+  const unexpected = Object.keys(breakdown).filter((t) => !lateStageCalls.has(t));
   assert.deepEqual(unexpected, [],
     `unexpected tool calls when resuming at stage 7: ${JSON.stringify(breakdown)}`);
   assert.ok((breakdown.emit_synthesis ?? 0) >= 1,
@@ -192,9 +194,13 @@ test('truncated synthesizer response leaves stage at 7_synthesis, persists parti
   assert.equal(final.investigation.synthesis.truncated, false);
 
   const breakdown = resumedClient.callsByStageSince(callsBefore);
-  const unexpected = Object.keys(breakdown).filter((t) => t !== 'emit_synthesis');
+  // Resuming re-runs the synthesizer (emit_synthesis, stage 7) and then the
+  // breadth stage (report_areas, stage 8). Neither is a re-run of the earlier
+  // stages the resume is meant to skip.
+  const lateStageCalls = new Set(['emit_synthesis', 'report_areas']);
+  const unexpected = Object.keys(breakdown).filter((t) => !lateStageCalls.has(t));
   assert.deepEqual(unexpected, [],
-    `resume should only re-run synthesis; got: ${JSON.stringify(breakdown)}`);
+    `resume should only re-run stages 7-8 (synthesis + breadth); got: ${JSON.stringify(breakdown)}`);
 });
 
 // ---------------------------------------------------------------------------
@@ -314,9 +320,10 @@ test('pre-set cancellationToken produces user_cancelled last_failure', async () 
   // The pipeline records the stage that was current at the checkpoint where
   // cancellation fired. With pre-set cancellation and current_stage = '7_synthesis',
   // synthesis runs to completion before the first checkpoint — by that point
-  // current_stage has been advanced to 'complete'. Asserting the stage value
-  // documents this and guards against a refactor that drops the field.
-  assert.equal(saved.investigation.last_failure.stage, 'complete');
+  // current_stage has been advanced to the breadth stage (breadth is its own
+  // resumable stage), which is where cancellation is recorded. Asserting the
+  // stage value documents this and guards against a refactor that drops it.
+  assert.equal(saved.investigation.last_failure.stage, '8_breadth');
 });
 
 // ---------------------------------------------------------------------------

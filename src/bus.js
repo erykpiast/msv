@@ -52,6 +52,8 @@ const EVENTS = Object.freeze({
 
   SYNTHESIZER_DONE: 'synthesizer.done',
 
+  BREADTH_COMPUTED: 'breadth.computed',
+
   API_CALL_START: 'api.call.start',
   API_CALL_RETRY: 'api.call.retry',
   API_CALL_END: 'api.call.end',

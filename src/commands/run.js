@@ -29,6 +29,8 @@ const { runCrossPollinationReaction } = require('../agents/persona');
 const { runWorkingGroup } = require('../working_group');
 const { aggregateForum } = require('../forum');
 const { runSynthesizer } = require('../agents/synthesizer');
+const { runBreadthAnalysis } = require('../agents/breadth');
+const { getCommitSha } = require('../version');
 const { planResume } = require('../resume');
 const { CancellationError, classifyError, sanitiseMessage, actionableMessage } = require('../failure');
 const { createBus } = require('../bus');
@@ -76,6 +78,13 @@ async function withHeartbeat(stage, bus, fn) {
   } finally {
     clearInterval(timer);
   }
+}
+
+// Tags the stage about to run with the commit SHA of the app build executing it,
+// so a run paused and resumed across app versions shows which version produced
+// which part of the result (see storage.js freshInvestigation doc).
+function recordStageVersion(inv) {
+  inv.versions[inv.progress.current_stage] = getCommitSha();
 }
 
 async function performRestart(idea) {
@@ -233,7 +242,8 @@ async function runPipeline(idea, client, { cancellationToken, bus } = {}) {
 
   // ─────────────────── [1/7] discovery ───────────────────
   if (inv.progress.current_stage === '1_discovery') {
-    if (bus) bus.emit('pipeline.stage.start', { stage: 'discovery', stage_index: 1, total_stages: 7 });
+    recordStageVersion(inv);
+    if (bus) bus.emit('pipeline.stage.start', { stage: 'discovery', stage_index: 1, total_stages: 8 });
     const discovery = await withHeartbeat('discovery', bus, () =>
       runPerspectiveDiscovery({
         client,
@@ -258,7 +268,8 @@ async function runPipeline(idea, client, { cancellationToken, bus } = {}) {
 
   // ─────────────────── [2/7] diversity ───────────────────
   if (inv.progress.current_stage === '2_diversity') {
-    if (bus) bus.emit('pipeline.stage.start', { stage: 'diversity', stage_index: 2, total_stages: 7 });
+    recordStageVersion(inv);
+    if (bus) bus.emit('pipeline.stage.start', { stage: 'diversity', stage_index: 2, total_stages: 8 });
     const selectedDiscovered = selectDiversePersonas(
       inv.perspective_discovery.candidate_personas,
       { count: 5 }
@@ -281,7 +292,8 @@ async function runPipeline(idea, client, { cancellationToken, bus } = {}) {
 
   // ─────────────────── [3/7] coordinator ───────────────────
   if (inv.progress.current_stage === '3_coordinator') {
-    if (bus) bus.emit('pipeline.stage.start', { stage: 'coordinator', stage_index: 3, total_stages: 7 });
+    recordStageVersion(inv);
+    if (bus) bus.emit('pipeline.stage.start', { stage: 'coordinator', stage_index: 3, total_stages: 8 });
     const initialDecomposition = await withHeartbeat('coordinator', bus, () =>
       runCoordinatorInitial({
         client,
@@ -316,10 +328,11 @@ async function runPipeline(idea, client, { cancellationToken, bus } = {}) {
   // ─────────────────── [4/7] working groups ───────────────────
   let workingGroups;
   if (inv.progress.current_stage === '4_working_groups') {
+    recordStageVersion(inv);
     if (bus) bus.emit('pipeline.stage.start', {
       stage: 'working_groups',
       stage_index: 4,
-      total_stages: 7,
+      total_stages: 8,
       territory_count: territories.length,
     });
     workingGroups = await withHeartbeat('working_groups', bus, () =>
@@ -345,10 +358,11 @@ async function runPipeline(idea, client, { cancellationToken, bus } = {}) {
 
   // ─────────────────── [5/7] cross-pollination ───────────────────
   if (inv.progress.current_stage === '5_cross_pollination') {
+    recordStageVersion(inv);
     if (bus) bus.emit('pipeline.stage.start', {
       stage: 'cross_pollination',
       stage_index: 5,
-      total_stages: 7,
+      total_stages: 8,
     });
     const livePairs = workingGroups
       .filter(
@@ -450,7 +464,8 @@ async function runPipeline(idea, client, { cancellationToken, bus } = {}) {
 
   // ─────────────────── [6/7] forum ───────────────────
   if (inv.progress.current_stage === '6_forum') {
-    if (bus) bus.emit('pipeline.stage.start', { stage: 'forum', stage_index: 6, total_stages: 7 });
+    recordStageVersion(inv);
+    if (bus) bus.emit('pipeline.stage.start', { stage: 'forum', stage_index: 6, total_stages: 8 });
     const forum = await withHeartbeat('forum', bus, () =>
       aggregateForum({
         client,
@@ -477,9 +492,10 @@ async function runPipeline(idea, client, { cancellationToken, bus } = {}) {
     await checkpoint(idea, cancellationToken);
   }
 
-  // ─────────────────── [7/7] synthesis ───────────────────
+  // ─────────────────── [7/8] synthesis ───────────────────
   if (inv.progress.current_stage === '7_synthesis') {
-    if (bus) bus.emit('pipeline.stage.start', { stage: 'synthesis', stage_index: 7, total_stages: 7 });
+    recordStageVersion(inv);
+    if (bus) bus.emit('pipeline.stage.start', { stage: 'synthesis', stage_index: 7, total_stages: 8 });
     const synthesis = await withHeartbeat('synthesis', bus, () =>
       runSynthesizer({
         client,
@@ -519,12 +535,51 @@ async function runPipeline(idea, client, { cancellationToken, bus } = {}) {
         occurred_at: new Date().toISOString(),
       };
     } else {
-      inv.completed_at = new Date().toISOString();
-      inv.progress.current_stage = 'complete';
+      // Synthesis succeeded. Advance to the breadth stage rather than marking
+      // the run complete — breadth is its own resumable stage (see below) so it
+      // can be (re)computed without re-paying for the synthesizer.
       inv.last_failure = null;
-      idea.status = 'ready';
+      inv.progress.current_stage = '8_breadth';
     }
     if (bus) bus.emit('pipeline.stage.end', { stage: 'synthesis', summary: {} });
+    await checkpoint(idea, cancellationToken);
+  }
+
+  // ─────────────────── [8/8] breadth ───────────────────
+  // Realized-breadth score (issue #33): a single model call that clusters the
+  // synthesis findings into distinct areas. It's its own stage so it reads the
+  // already-persisted findings and never requires re-running the synthesizer —
+  // a reset to '8_breadth' recomputes breadth alone. Non-fatal: a synthesis
+  // that already succeeded is never lost to a breadth failure, so this stage
+  // always completes the run.
+  if (inv.progress.current_stage === '8_breadth') {
+    recordStageVersion(inv);
+    if (bus) bus.emit('pipeline.stage.start', { stage: 'breadth', stage_index: 8, total_stages: 8 });
+    let areas = null;
+    try {
+      const breadth = await runBreadthAnalysis({
+        client,
+        idea,
+        model: inv.model,
+        budget: inv.budget,
+        synthesis: inv.synthesis,
+        bus,
+      });
+      if (breadth) {
+        inv.synthesis.breadth = breadth;
+        areas = breadth.n_areas;
+      }
+    } catch (err) {
+      if (bus) bus.emit('pipeline.stage.progress', {
+        stage: 'breadth',
+        message: `breadth analysis failed (non-fatal): ${err.message}`,
+      });
+    }
+    inv.completed_at = new Date().toISOString();
+    inv.progress.current_stage = 'complete';
+    inv.last_failure = null;
+    idea.status = 'ready';
+    if (bus) bus.emit('pipeline.stage.end', { stage: 'breadth', summary: { areas } });
     await checkpoint(idea, cancellationToken);
   }
 

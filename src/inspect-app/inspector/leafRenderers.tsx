@@ -36,6 +36,13 @@ function synthesisToMarkdown(s: NonNullable<SynthesisView>): string {
   const parts: string[] = [];
   const hasSections = Array.isArray(s.sections) && s.sections.length > 0;
 
+  if (s.breadth) {
+    parts.push(
+      `**Breadth:** ${s.breadth.n_areas} distinct areas (evenness ${s.breadth.evenness.toFixed(2)}) — ` +
+        s.breadth.areas.map((a) => `${a.label} (${a.finding_indices.length})`).join(', ')
+    );
+  }
+
   if (hasSections) {
     for (const section of s.sections!) {
       parts.push(`## ${section.area_title}`);
@@ -394,8 +401,31 @@ export function renderLeaf(
 
       const hasStructured = Array.isArray(s.sections) && s.sections.length > 0;
 
+      const breadthBlock = s.breadth ? (
+        <Paper p="sm" radius="sm" withBorder>
+          <Stack gap="xs">
+            <Group gap="xs" align="center">
+              <Text fw={700} size="md">Breadth</Text>
+              <Badge size="sm" variant="light">{s.breadth.n_areas} distinct areas</Badge>
+              <Text size="xs" c="dimmed">evenness {s.breadth.evenness.toFixed(2)}</Text>
+            </Group>
+            <Text size="xs" c="dimmed">
+              Distinct areas the findings cover (model-judged). Higher = broader; evenness near 1 means balanced areas.
+            </Text>
+            <Group gap={4}>
+              {s.breadth.areas.map((a, i) => (
+                <Badge key={i} size="sm" variant="outline" color="gray">
+                  {a.label} ({a.finding_indices.length})
+                </Badge>
+              ))}
+            </Group>
+          </Stack>
+        </Paper>
+      ) : null;
+
       const body = hasStructured ? (
         <Stack gap="xl">
+          {breadthBlock}
           {s.sections!.map((section, i) => (
             <Stack key={i} gap="xs">
               <Text fw={700} size="lg">{section.area_title}</Text>
@@ -484,6 +514,7 @@ export function renderLeaf(
         </Stack>
       ) : (
         <Stack gap="sm">
+          {breadthBlock}
           <Markdown>{s.report}</Markdown>
           {s.headline_findings.length > 0 && (
             <Stack gap={2}>
