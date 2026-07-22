@@ -142,9 +142,18 @@ async function runCoordinatorInitial({ client, idea, model, budget, personas, bu
         reason: result.toolUse ? 'territories_missing_or_malformed' : 'tool_use_missing',
       },
     });
+    // Drop the emit_territories tool_use block before appending assistant
+    // content — a truncated call can still carry a partial tool_use block,
+    // which has no paired tool_result and would otherwise be rejected by
+    // the API (see synthesizer.js's malformed-payload retry for the same
+    // fix, and discovery.js's cleanedContent handling for the origin of
+    // this pattern).
+    const cleanedContent = (result.response.content || []).filter(
+      (block) => !(block.type === 'tool_use' && block.name === 'emit_territories')
+    );
     const retryMessages = [
       ...messages,
-      { role: 'assistant', content: (result.response.content || []) },
+      ...(cleanedContent.length > 0 ? [{ role: 'assistant', content: cleanedContent }] : []),
       {
         role: 'user',
         content:
