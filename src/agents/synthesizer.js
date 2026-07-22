@@ -403,9 +403,16 @@ async function runSynthesizer({ client, idea, model, budget, forum, personas, pa
       kind: 'malformed_payload_retry',
       payload: { stop_reason: response.stop_reason, usage, issues: shapeIssues },
     });
+    // Drop the emit_synthesis tool_use block before appending assistant
+    // content — it has no paired tool_result, and the API rejects a
+    // tool_use block that isn't immediately followed by one (see
+    // discovery.js's cleanedContent handling for the same pattern).
+    const cleanedContent = (response.content || []).filter(
+      (block) => !(block.type === 'tool_use' && block.name === 'emit_synthesis')
+    );
     const retryMessages = [
       ...messages,
-      { role: 'assistant', content: (response.content || []) },
+      ...(cleanedContent.length > 0 ? [{ role: 'assistant', content: cleanedContent }] : []),
       {
         role: 'user',
         content:
