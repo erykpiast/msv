@@ -26,9 +26,9 @@ function setRootForTesting(dir) {
 // caps live elsewhere: per-call `max_tokens` in anthropic.js and the server-side
 // `max_uses` on researcher tools in agents/researcher.js.
 const DEFAULT_BUDGET = {
-  max_executor_calls: 240,
-  max_total_tokens: 8_000_000,
-  max_researcher_tool_calls: 200,
+  max_executor_calls: 3_000,
+  max_total_tokens: 100_000_000,
+  max_researcher_tool_calls: 2_000,
   used_executor_calls: 0,
   used_total_tokens: 0,
   used_researcher_tool_calls: 0,
