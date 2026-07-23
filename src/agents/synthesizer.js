@@ -403,10 +403,12 @@ async function runSynthesizer({ client, idea, model, budget, forum, personas, pa
       kind: 'malformed_payload_retry',
       payload: { stop_reason: response.stop_reason, usage, issues: shapeIssues },
     });
-    // Drop the emit_synthesis tool_use block before appending assistant
-    // content — it has no paired tool_result, and the API rejects a
-    // tool_use block that isn't immediately followed by one (see
-    // discovery.js's cleanedContent handling for the same pattern).
+    // Drop the emit_synthesis tool_use block before replaying this turn: a
+    // tool_use with no paired tool_result in the next message is rejected
+    // outright by the API ("tool_use ids were found without tool_result
+    // blocks immediately after"). Same pattern discovery.js uses for its own
+    // partial emit_personas tool_use when re-prompting without a paired
+    // result (see cleanedContent there).
     const cleanedContent = (response.content || []).filter(
       (block) => !(block.type === 'tool_use' && block.name === 'emit_synthesis')
     );
