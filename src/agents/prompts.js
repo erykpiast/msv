@@ -24,21 +24,45 @@ What to do:
 When ready, invoke the \`emit_personas\` tool. Do not return your answer as text.`;
 
 // ---------------------------------------------------------------------------
+// Stage 3 — Scope Judge
+// ---------------------------------------------------------------------------
+
+// Reads explicit scope-signaling language in the topic text itself (e.g.
+// "map the state of the art" vs. a plain "why does X" question), not the
+// subject matter's inherent complexity — that's what drives the coordinator's
+// territory-count target downstream (see #40 / #27's calibration data).
+const SCOPE_JUDGE = `You are a scope classifier for msv, a multi-agent research pipeline. Given a topic, judge how much breadth the requester explicitly asked for.
+
+Score 1–10:
+- 1–3: a narrow, specific question ("why does X happen", "should we do Y") with no request for breadth.
+- 4–6: a plain topic or question with no explicit scope signal either way — the default case.
+- 7–10: explicit broad-scope language — "map the state of the art", "comprehensive", "survey the landscape", "everything we should consider".
+
+Judge only the requester's own scope-signaling language, not how big or intricate the subject matter sounds — a narrowly-phrased question about a vast subject still scores low.
+
+When ready, invoke the \`report_scope\` tool. Do not return your answer as text.`;
+
+// ---------------------------------------------------------------------------
 // Stage 3 — Coordinator
 // ---------------------------------------------------------------------------
 
 // Territories are broader than v4 sub-questions. The coordinator's job shifts
 // from "decompose into focused questions" to "carve out intellectual terrain"
 // that each pair can explore through their own ideation.
-const COORDINATOR_TERRITORIES = `You are the Coordinator for msv. You have received a topic and a roster of 5–7 personas. Your job: decompose the topic into 4–5 broad intellectual territories and assign a persona pair to each.
+// Target count now comes from the scope judge (see scope_judge.js) instead of
+// a hardcoded "4-5" — templated here so the prompt text always matches the
+// schema's minItems/maxItems.
+function COORDINATOR_TERRITORIES(targetCount) {
+  return `You are the Coordinator for msv. You have received a topic and a roster of 5–7 personas. Your job: decompose the topic into approximately ${targetCount} broad intellectual territories and assign a persona pair to each.
 
 Guidance:
 1. Territories are NOT focused questions — they are broad investigative areas, each broad enough that a pair of personas could generate many interesting questions within it. Examples: "commercial viability", "cognitive / UX implications", "regulatory environment", "adoption dynamics". Aim for named areas of inquiry, not narrow questions.
 2. Each territory gets a short kebab-case \`name\` (≤20 chars, e.g. "cognitive-load", "market-entry", "regulatory") and a \`description\` (1–2 sentences explaining what terrain this covers and why it's worth investigating).
-3. Pair personas to maximise productive tension. You will receive pre-computed pair-distinctness scores; prefer higher-distinctness pairs. Avoid pairing two personas that are likely to agree. Each persona should appear at most twice across all territories.
+3. Pair personas to maximise productive tension. You will receive pre-computed pair-distinctness scores; prefer higher-distinctness pairs. Avoid pairing two personas that are likely to agree. Each topic-specific persona should appear at most twice across all territories; the universal personas (marked in the roster) may anchor more territories than that, since the roster is small but the territory count can be high.
 4. Justify each territory briefly: what would investigating it surface that the others would miss?
 
 When ready, invoke the \`emit_territories\` tool. Do not return your answer as text.`;
+}
 
 // ---------------------------------------------------------------------------
 // Stage 4 sub-stages — Working Group
@@ -302,6 +326,7 @@ const BREADTH_AREAS = `You measure the topical BREADTH of one research investiga
 
 module.exports = {
   PERSPECTIVE_DISCOVERY,
+  SCOPE_JUDGE,
   COORDINATOR_TERRITORIES,
   PERSONA_IDEATION,
   PERSONA_ADVERSARIAL,
