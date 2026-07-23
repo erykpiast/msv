@@ -284,6 +284,45 @@ test('runCoordinatorInitial: T <= P clamp caps the target at the persona pool si
   assert.equal(requestLog.payload.effective_target_territory_count, 3);
 });
 
+test('runCoordinatorInitial: T <= capacity clamp accounts for unlimited fixed-persona reuse', async () => {
+  // 5 topic-specific personas (cap 2 territories each) + 2 fixed personas
+  // (unlimited) => capacity is 5 * 2 = 10, not personas.length (7).
+  const personas = [
+    ...Array.from({ length: 5 }, (_, i) => ({
+      id: `p_${String(i + 1).padStart(3, '0')}`,
+      name: `Persona ${i + 1}`,
+      tradition: 'tradition',
+      stance: 'stance',
+    })),
+    { id: 'skeptic', name: 'Skeptic', tradition: 'critical', stance: 'steel-manned', fixed: true },
+    { id: 'builder', name: 'Builder', tradition: 'constructive', stance: 'generative', fixed: true },
+  ];
+
+  const seenSchemas = [];
+  const client = makeCreateClient((params) => {
+    seenSchemas.push(params.tools[0].input_schema.properties.territories);
+    return wellFormedResponse();
+  });
+
+  await runCoordinatorInitial({
+    client,
+    idea: IDEA,
+    model: 'test-model',
+    budget: {},
+    personas,
+    bus: null,
+    targetTerritoryCount: 10,
+  });
+
+  assert.equal(seenSchemas[0].minItems, 9);
+  assert.equal(seenSchemas[0].maxItems, 11);
+
+  const entries = await readLog('i_test', 'coordinator');
+  const requestLogs = entries.filter((e) => e.kind === 'request');
+  const requestLog = requestLogs[requestLogs.length - 1];
+  assert.equal(requestLog.payload.effective_target_territory_count, 10);
+});
+
 test('runCoordinatorInitial: fixed personas are marked universal in the roster so they can anchor extra territories', async () => {
   const seenMessages = [];
   const client = makeCreateClient((params) => {
@@ -434,7 +473,11 @@ test('runCoordinatorInitial: throws when overuse persists after the retry', asyn
     usage: { input_tokens: 10, output_tokens: 20 },
   });
 
-  const client = makeCreateClient(() => overusedResponse());
+  const seenMessages = [];
+  const client = makeCreateClient((params) => {
+    seenMessages.push(params.messages);
+    return overusedResponse();
+  });
 
   await assert.rejects(
     () =>
@@ -446,6 +489,16 @@ test('runCoordinatorInitial: throws when overuse persists after the retry', asyn
         personas: PERSONAS,
         bus: null,
       }),
-    /still overuses persona/
+    /still overuses persona\(s\) p_001 after 2 retries/
+  );
+
+  assert.equal(seenMessages.length, 3, 'should attempt the initial call plus 2 corrective retries');
+
+  const entries = await readLog('i_test', 'coordinator');
+  const retryLogs = entries.filter((e) => e.kind === 'overuse_retry').slice(-2);
+  assert.equal(retryLogs.length, 2, 'both overuse retries must be logged');
+  assert.deepEqual(
+    retryLogs.map((e) => e.payload.attempt),
+    [1, 2]
   );
 });
