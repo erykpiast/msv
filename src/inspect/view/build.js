@@ -291,6 +291,7 @@ function buildSynthesis(loaderInput) {
     key_references: coerceArray(synth.key_references),
     next_pass_proposals: coerceArray(synth.next_pass_proposals),
     breadth: synth.breadth ?? undefined,
+    structural_issues: synth.structural_issues ?? null,
   };
 }
 

@@ -531,6 +531,7 @@ async function runPipeline(idea, client, { cancellationToken, bus } = {}) {
       key_references: synthesis.key_references || null,
       next_pass_proposals: synthesis.next_pass_proposals || null,
       truncated: !!synthesis.truncated,
+      structural_issues: synthesis.structural_issues || null,
     };
     if (synthesis.truncated) {
       // Leave current_stage at '7_synthesis' and status off 'ready' so the

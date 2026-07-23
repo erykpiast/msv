@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { Anchor, Badge, Group, Paper, Skeleton, Stack, Text } from '@mantine/core';
+import { Alert, Anchor, Badge, Group, Paper, Skeleton, Stack, Text } from '@mantine/core';
 import type { InvestigationView, Move, SynthesisView, WorkingGroupView } from '../../inspect/types';
 import { isAlignmentMove } from '../utils/moveStage';
 import type { ProgressOverlay } from '../hooks/useLiveProgress';
@@ -35,6 +35,12 @@ function formatConfidence(n: unknown): string {
 function synthesisToMarkdown(s: NonNullable<SynthesisView>): string {
   const parts: string[] = [];
   const hasSections = Array.isArray(s.sections) && s.sections.length > 0;
+
+  if (Array.isArray(s.structural_issues) && s.structural_issues.length > 0) {
+    parts.push(
+      `> ⚠ **Structural issue:** ${s.structural_issues.length} internal reference(s) could not be resolved to a verifiable source after repair attempts and were redacted as \`[unverified]\`. Treat any \`[unverified]\` marker below as an unsupported claim.`
+    );
+  }
 
   if (s.breadth) {
     parts.push(
@@ -401,6 +407,16 @@ export function renderLeaf(
 
       const hasStructured = Array.isArray(s.sections) && s.sections.length > 0;
 
+      const structuralIssuesBlock =
+        Array.isArray(s.structural_issues) && s.structural_issues.length > 0 ? (
+          <Alert color="yellow" title={`${s.structural_issues.length} unresolved internal reference(s)`}>
+            <Text size="sm">
+              These could not be resolved to a verifiable source after repair attempts and were redacted
+              as <Text span ff="monospace">[unverified]</Text> — treat them as unsupported claims.
+            </Text>
+          </Alert>
+        ) : null;
+
       const breadthBlock = s.breadth ? (
         <Paper p="sm" radius="sm" withBorder>
           <Stack gap="xs">
@@ -425,6 +441,7 @@ export function renderLeaf(
 
       const body = hasStructured ? (
         <Stack gap="xl">
+          {structuralIssuesBlock}
           {breadthBlock}
           {s.sections!.map((section, i) => (
             <Stack key={i} gap="xs">
@@ -455,14 +472,14 @@ export function renderLeaf(
               {s.tension_points.map((tp, i) => (
                 <Stack key={i} gap={4} p="sm" style={{ borderLeft: '3px solid var(--mantine-color-orange-5)' }}>
                   <Text fw={600} size="sm">{tp.title}</Text>
-                  <Text size="sm">{tp.description}</Text>
+                  <Text size="sm"><Markdown>{tp.description}</Markdown></Text>
                   {tp.sides.map((side, j) => (
                     <Text key={j} size="xs" c="dimmed">
-                      <strong>{side.label}:</strong> {side.position}
+                      <strong>{side.label}:</strong> <Markdown>{side.position}</Markdown>
                     </Text>
                   ))}
                   {tp.resolution && (
-                    <Text size="xs" c="teal">Resolved: {tp.resolution}</Text>
+                    <Text size="xs" c="teal">Resolved: <Markdown>{tp.resolution}</Markdown></Text>
                   )}
                 </Stack>
               ))}
@@ -514,6 +531,7 @@ export function renderLeaf(
         </Stack>
       ) : (
         <Stack gap="sm">
+          {structuralIssuesBlock}
           {breadthBlock}
           <Markdown>{s.report}</Markdown>
           {s.headline_findings.length > 0 && (

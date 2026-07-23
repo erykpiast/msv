@@ -372,6 +372,11 @@ export type SynthesisReference = {
   key_observations: string[];
 };
 
+export type SynthesisStructuralIssue = {
+  id: string;
+  field: string;
+};
+
 export type SynthesisNextPassProposal = {
   topic: string;
   rationale: string;
@@ -405,6 +410,10 @@ export type SynthesisView = {
   next_pass_proposals?: SynthesisNextPassProposal[];
   // realized-breadth metric (issue #33)
   breadth?: SynthesisBreadth;
+  // Internal ids that survived the citation-resolver's repair loop unresolved
+  // and were redacted to `[unverified]` (issue #42). Null/absent means every
+  // internal reference was either resolved to a link or never present.
+  structural_issues?: SynthesisStructuralIssue[] | null;
 } | null;
 
 export type PersonaInteractionCell = {
