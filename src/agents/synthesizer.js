@@ -3,6 +3,17 @@
 const { runStructuredStreamingCall } = require('../anthropic');
 const { SYNTHESIZER } = require('./prompts');
 const { appendLog } = require('../storage');
+const {
+  buildEntityIndex,
+  scanAndResolve,
+  redactUnresolved,
+  buildRepairPrompt,
+} = require('./synthesisCitations');
+
+// Cap on the citation-repair round-trips (issue #42 §3): after this many
+// attempts, remaining unresolved ids are redacted rather than re-prompted
+// again, so a persistently-hallucinating model can't loop indefinitely.
+const MAX_CITATION_REPAIR_ATTEMPTS = 2;
 
 // Volume-driven maxItems values (sections, key_findings, key_references) scale
 // with investigation size instead of being fixed — see buildEmitSynthesisTool.
@@ -459,12 +470,78 @@ async function runSynthesizer({ client, idea, model, budget, forum, personas, pa
     });
   }
 
+  // Deterministic post-pass (issue #42): resolve or strip bare internal ids
+  // (n_.../f_.../o_...) from every prose field so the persisted document is
+  // self-contained, rather than relying solely on the prompt telling the
+  // model not to leak them. Skipped on a truncated response — there's no
+  // well-formed payload to repair, and a repair round-trip would just spend
+  // budget re-truncating.
+  let structuralIssues = null;
+  if (!truncated) {
+    const entityIndex = buildEntityIndex({ forum, pairDebates });
+    let scan = scanAndResolve(payload, entityIndex);
+    payload = scan.payload;
+
+    let repairAttempts = 0;
+    while (scan.unresolved.length > 0 && repairAttempts < MAX_CITATION_REPAIR_ATTEMPTS) {
+      repairAttempts += 1;
+      await appendLog(idea.id, 'synthesizer', {
+        kind: 'citation_repair_attempt',
+        payload: {
+          attempt: repairAttempts,
+          unresolved_count: scan.unresolved.length,
+          unresolved_ids: scan.unresolved.map((u) => u.id),
+        },
+      });
+      const cleanedContent = (response.content || []).filter(
+        (block) => !(block.type === 'tool_use' && block.name === 'emit_synthesis')
+      );
+      const repairMessages = [
+        ...messages,
+        ...(cleanedContent.length > 0 ? [{ role: 'assistant', content: cleanedContent }] : []),
+        { role: 'user', content: buildRepairPrompt(scan.unresolved) },
+      ];
+      const repairResult = await runStructuredStreamingCall({ ...callArgs, messages: repairMessages });
+      // A truncated repair round-trip carries only a partial (or empty)
+      // payload. Adopting it would throw away the complete pre-repair synthesis
+      // — which was already resolved and only needs its remaining unresolved
+      // ids redacted — and mark the whole stage truncated, forcing run.js to
+      // re-run synthesis from scratch. Instead, keep the last good payload and
+      // fall through to the redaction path below.
+      if (repairResult.truncated) break;
+      response = repairResult.response;
+      toolUse = repairResult.toolUse;
+      usage = repairResult.usage;
+      payload = toolUse?.input || {};
+      scan = scanAndResolve(payload, entityIndex);
+      payload = scan.payload;
+    }
+
+    if (!truncated && scan.unresolved.length > 0) {
+      payload = redactUnresolved(payload, scan.unresolved.map((u) => u.id));
+      structuralIssues = scan.unresolved.map(({ id, field }) => ({ id, field }));
+      await appendLog(idea.id, 'synthesizer', {
+        kind: 'citation_repair_exhausted',
+        payload: {
+          attempts: repairAttempts,
+          unresolved_count: structuralIssues.length,
+          unresolved_ids: structuralIssues.map((i) => i.id),
+        },
+      });
+      if (bus) bus.emit('pipeline.stage.progress', {
+        stage: 'synthesis',
+        message: `WARNING: ${structuralIssues.length} internal reference(s) in the synthesis could not be resolved to a source after ${repairAttempts} repair attempt(s); redacted as [unverified].`,
+      });
+    }
+  }
+
   if (bus) bus.emit('synthesizer.done', {
     headline_count: (payload.headline_findings || []).length,
     tension_count: (payload.open_tensions || []).length,
     has_question_landscape: !!(payload.question_landscape),
     has_dead_end_summary: !!(payload.dead_end_summary),
     section_count: (payload.sections || []).length,
+    structural_issue_count: structuralIssues ? structuralIssues.length : 0,
     truncated,
   });
 
@@ -479,6 +556,7 @@ async function runSynthesizer({ client, idea, model, budget, forum, personas, pa
     tension_points: coerceArray(payload.tension_points),
     key_references: coerceArray(payload.key_references),
     next_pass_proposals: coerceArray(payload.next_pass_proposals),
+    structural_issues: structuralIssues,
     usage,
     truncated,
   };

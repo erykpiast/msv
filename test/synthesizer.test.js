@@ -677,3 +677,262 @@ test('renderFindingsText formats refs with url, title, quality, content', () => 
   assert.ok(text.includes('primary'));
   assert.ok(text.includes('some content'));
 });
+
+// ---------------------------------------------------------------------------
+// runSynthesizer — citation resolver / repair loop (issue #42)
+// ---------------------------------------------------------------------------
+
+// Extends the base fixture with a resolvable finding/node pair, so tests can
+// exercise the post-pass resolver's node_id -> evidence_refs -> finding walk
+// without hand-rolling the whole forum/pairDebates shape each time.
+function buildCitableSynthesizerInputs() {
+  const inputs = buildSynthesizerInputs();
+  inputs.forum.nodes.push({
+    node_id: 'n_002',
+    survival_rank: 2,
+    working_group_id: 't_001',
+    aggregate_confidence: 8,
+    has_open_question: false,
+    contradiction_with_node_id: null,
+    content: 'A cited claim.',
+    reactions: [],
+    evidence_refs: [{ finding_id: 'f_aq1_01' }],
+  });
+  inputs.pairDebates = [
+    {
+      territory_id: 't_001',
+      researcher_reports: [
+        {
+          report_id: 'rr_001',
+          findings: [
+            { finding_id: 'f_aq1_01', source_url: 'https://example.com/a', source_title: 'Source A' },
+          ],
+        },
+      ],
+      observations: [],
+    },
+  ];
+  return inputs;
+}
+
+function makeSequencedClient(payloads) {
+  let callCount = 0;
+  const streamCalls = [];
+  return {
+    calls: streamCalls,
+    callCount: () => callCount,
+    messages: {
+      stream(params) {
+        streamCalls.push(params);
+        const input = payloads[Math.min(callCount, payloads.length - 1)];
+        callCount += 1;
+        return {
+          async finalMessage() {
+            return {
+              stop_reason: 'tool_use',
+              content: [{ type: 'tool_use', id: 'mock', name: 'emit_synthesis', input }],
+              usage: { input_tokens: 10, output_tokens: 10 },
+            };
+          },
+        };
+      },
+    },
+  };
+}
+
+test('runSynthesizer resolves a bare node_id citation in tension_points.sides[].position without a repair round-trip', async () => {
+  const payload = {
+    report: 'Mock. '.repeat(60),
+    headline_findings: ['A.', 'B.', 'C.'],
+    open_tensions: [],
+    tension_points: [
+      {
+        title: 'T',
+        description: 'Disputed per n_002.',
+        sides: [{ label: 'Side A', position: 'This holds per n_002.' }],
+        resolution: null,
+      },
+    ],
+  };
+  const client = makeSequencedClient([payload]);
+  const bus = makeRecordingBus();
+  const inputs = buildCitableSynthesizerInputs();
+
+  const result = await runSynthesizer({ client, bus, ...inputs });
+
+  assert.equal(client.callCount(), 1, 'a fully resolvable payload must not trigger a repair round-trip');
+  assert.equal(result.structural_issues, null);
+  assert.match(result.tension_points[0].description, /\[Source A\]\(https:\/\/example\.com\/a\)/);
+  assert.match(result.tension_points[0].sides[0].position, /\[Source A\]\(https:\/\/example\.com\/a\)/);
+  assert.doesNotMatch(result.tension_points[0].description, /n_002/);
+
+  const done = bus.events.find((e) => e.name === 'synthesizer.done');
+  assert.equal(done.payload.structural_issue_count, 0);
+});
+
+test('runSynthesizer batches unresolved references into one repair prompt and recovers on the retry', async () => {
+  const brokenPayload = {
+    report: 'Mock. '.repeat(60),
+    headline_findings: ['A.', 'B.', 'C.'],
+    open_tensions: [],
+    tension_points: [
+      {
+        title: 'T',
+        description: 'The claim in n_999 is the strongest.',
+        sides: [{ label: 'Side A', position: 'Also see f_bogus_99.' }],
+        resolution: null,
+      },
+    ],
+  };
+  const fixedPayload = {
+    report: 'Mock. '.repeat(60),
+    headline_findings: ['A.', 'B.', 'C.'],
+    open_tensions: [],
+    tension_points: [
+      {
+        title: 'T',
+        description: 'The claim in n_002 is the strongest.',
+        sides: [{ label: 'Side A', position: 'No further citation needed.' }],
+        resolution: null,
+      },
+    ],
+  };
+  const client = makeSequencedClient([brokenPayload, fixedPayload]);
+  const bus = makeRecordingBus();
+  const inputs = buildCitableSynthesizerInputs();
+
+  const result = await runSynthesizer({ client, bus, ...inputs });
+
+  assert.equal(client.callCount(), 2, 'exactly one repair round-trip for a single batch of broken refs');
+  assert.equal(result.structural_issues, null);
+  assert.match(result.tension_points[0].description, /\[Source A\]\(https:\/\/example\.com\/a\)/);
+
+  // The repair prompt must batch both broken refs from the same round in one message.
+  const repairMessage = client.calls[1].messages[client.calls[1].messages.length - 1];
+  assert.equal(repairMessage.role, 'user');
+  assert.match(repairMessage.content, /n_999/);
+  assert.match(repairMessage.content, /f_bogus_99/);
+
+  const log = await readLog('i_test', 'synthesizer');
+  const attempt = log.find((entry) => entry.kind === 'citation_repair_attempt');
+  assert.ok(attempt, 'citation_repair_attempt must be logged');
+  assert.equal(attempt.payload.attempt, 1);
+  assert.equal(attempt.payload.unresolved_count, 2);
+});
+
+test('runSynthesizer caps repair at 2 attempts and redacts remaining unresolved ids, surfacing a CLI warning and structural_issues', async () => {
+  const stillBrokenPayload = {
+    report: 'Mock. '.repeat(60),
+    headline_findings: ['A.', 'B.', 'C.'],
+    open_tensions: [],
+    tension_points: [
+      {
+        title: 'T',
+        description: 'The claim in n_999 never gets fixed.',
+        sides: [{ label: 'Side A', position: 'No citation.' }],
+        resolution: null,
+      },
+    ],
+  };
+  const client = makeSequencedClient([stillBrokenPayload]); // every call returns the same unresolved payload
+  const bus = makeRecordingBus();
+  const inputs = buildCitableSynthesizerInputs();
+
+  const result = await runSynthesizer({ client, bus, ...inputs });
+
+  // 1 initial call + 2 repair attempts = 3 calls total.
+  assert.equal(client.callCount(), 3);
+  assert.match(result.tension_points[0].description, /\[unverified\]/);
+  assert.doesNotMatch(result.tension_points[0].description, /n_999/);
+  assert.ok(Array.isArray(result.structural_issues));
+  assert.equal(result.structural_issues.length, 1);
+  assert.equal(result.structural_issues[0].id, 'n_999');
+
+  const warning = bus.events.find(
+    (e) => e.name === 'pipeline.stage.progress' && /internal reference\(s\) in the synthesis could not be resolved/.test(e.payload.message)
+  );
+  assert.ok(warning, 'a CLI-surfaced warning must be emitted when repair is exhausted');
+
+  const done = bus.events.find((e) => e.name === 'synthesizer.done');
+  assert.equal(done.payload.structural_issue_count, 1);
+
+  const log = await readLog('i_test', 'synthesizer');
+  const exhausted = log.filter((entry) => entry.kind === 'citation_repair_exhausted');
+  assert.equal(exhausted.at(-1).payload.attempts, 2, 'repair must be capped at 2 attempts');
+});
+
+// First call emits a well-formed payload carrying an unresolvable id; the
+// repair round-trip then truncates at max_tokens before the emit_synthesis
+// block lands.
+function makeTruncatingRepairClient(initialPayload) {
+  let callCount = 0;
+  const streamCalls = [];
+  return {
+    calls: streamCalls,
+    callCount: () => callCount,
+    messages: {
+      stream(params) {
+        streamCalls.push(params);
+        const isFirst = callCount === 0;
+        callCount += 1;
+        return {
+          async finalMessage() {
+            if (isFirst) {
+              return {
+                stop_reason: 'tool_use',
+                content: [{ type: 'tool_use', id: 'mock', name: 'emit_synthesis', input: initialPayload }],
+                usage: { input_tokens: 10, output_tokens: 10 },
+              };
+            }
+            return {
+              stop_reason: 'max_tokens',
+              content: [{ type: 'text', text: 'partial, cut off before the tool call...' }],
+              usage: { input_tokens: 10, output_tokens: 10 },
+            };
+          },
+        };
+      },
+    },
+  };
+}
+
+test('runSynthesizer keeps the complete pre-repair synthesis and redacts when a repair round-trip truncates', async () => {
+  const brokenPayload = {
+    report: 'Mock. '.repeat(60),
+    headline_findings: ['A.', 'B.', 'C.'],
+    open_tensions: [],
+    tension_points: [
+      {
+        title: 'T',
+        description: 'The claim in n_999 is the strongest.',
+        sides: [{ label: 'Side A', position: 'No citation.' }],
+        resolution: null,
+      },
+    ],
+  };
+  const client = makeTruncatingRepairClient(brokenPayload);
+  const bus = makeRecordingBus();
+  const inputs = buildCitableSynthesizerInputs();
+
+  const result = await runSynthesizer({ client, bus, ...inputs });
+
+  // 1 initial call + 1 repair that truncated → stop.
+  assert.equal(client.callCount(), 2);
+  // A truncated repair must NOT discard the good payload or mark the stage
+  // truncated: we return a complete, redacted report instead of forcing a re-run.
+  assert.equal(result.truncated, false);
+  assert.ok(result.report && result.report.length >= 100, 'the initial good report body must survive');
+  assert.match(result.tension_points[0].description, /\[unverified\]/);
+  assert.doesNotMatch(result.tension_points[0].description, /n_999/);
+  assert.ok(Array.isArray(result.structural_issues));
+  assert.equal(result.structural_issues[0].id, 'n_999');
+
+  const warning = bus.events.find(
+    (e) => e.name === 'pipeline.stage.progress' && /could not be resolved/.test(e.payload.message)
+  );
+  assert.ok(warning, 'the redaction warning must still surface on the kept payload');
+
+  const done = bus.events.find((e) => e.name === 'synthesizer.done');
+  assert.equal(done.payload.truncated, false);
+  assert.equal(done.payload.structural_issue_count, 1);
+});
