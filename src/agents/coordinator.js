@@ -154,11 +154,19 @@ async function runCoordinatorInitial({
   // before it ever reaches the schema or the prompt. Fixed (universal)
   // personas anchor unlimited territories, so capacity isn't just
   // personas.length — it's driven by the topic-specific personas, each
-  // capped at 2 territories (findOverusedPersonas). With at least one fixed
-  // persona available to pair against, capacity is nonFixedCount * 2; with
-  // none, each territory must pair two topic-specific personas, capping
-  // capacity at nonFixedCount (a graph with max degree 2 has at most n
-  // edges).
+  // capped at 2 territories (findOverusedPersonas). With no fixed persona
+  // available, each territory must pair two topic-specific personas,
+  // capping capacity at nonFixedCount (a graph with max degree 2 has at
+  // most n edges). With at least one fixed persona available, capacity is
+  // nonFixedCount * 2 — but only because COORDINATOR_TERRITORIES and the
+  // overuse-retry message below both instruct the model to fall back to a
+  // fixed persona once the topic-specific pool is capped out, rather than
+  // reusing an over-limit topic-specific persona or pairing two
+  // topic-specific personas per territory. Without that fallback, the
+  // model's preference for higher-distinctness (often topic-specific ×
+  // topic-specific) pairs would burn 2 units of nonFixed capacity per
+  // territory instead of 1, blowing this budget well before nonFixedCount * 2
+  // territories are emitted.
   const fixedCount = personas.filter((p) => p.fixed).length;
   const nonFixedCount = personas.length - fixedCount;
   const capacity = fixedCount > 0 ? nonFixedCount * 2 : nonFixedCount;
@@ -270,12 +278,16 @@ async function runCoordinatorInitial({
         return `${id} (currently in ${owned.length} territories: ${names})`;
       })
       .join('; ');
+    const fixedIds = personas.filter((p) => p.fixed).map((p) => p.id);
+    const fixedFallback = fixedIds.length > 0
+      ? ` If every topic-specific persona is already at its two-territory limit and none is available to swap in, use a universal persona instead (${fixedIds.join(', ')}) — they are exempt from the cap.`
+      : '';
     const retryMessages = [
       ...messages,
       ...(cleanedContent.length > 0 ? [{ role: 'assistant', content: cleanedContent }] : []),
       {
         role: 'user',
-        content: `Persona(s) ${overuseDetail} were assigned to more than two territories, which violates the rule that topic-specific personas may anchor at most two. For each overused persona, keep at most two of their current territories and replace their \`assigned_pair\` slot in every other listed territory with a different topic-specific persona from the roster who is not already at their two-territory limit — do not just swap two overused personas with each other, and do not leave any persona over the limit. Re-emit the FULL emit_territories call (all territories, not just the changed ones) with corrected \`assigned_pair\`s.`,
+        content: `Persona(s) ${overuseDetail} were assigned to more than two territories, which violates the rule that topic-specific personas may anchor at most two. For each overused persona, keep at most two of their current territories and replace their \`assigned_pair\` slot in every other listed territory with a different topic-specific persona from the roster who is not already at their two-territory limit — do not just swap two overused personas with each other, and do not leave any persona over the limit.${fixedFallback} Re-emit the FULL emit_territories call (all territories, not just the changed ones) with corrected \`assigned_pair\`s.`,
       },
     ];
     const retryResult = await runStructuredCall({ ...callArgs, messages: retryMessages });
