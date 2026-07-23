@@ -32,6 +32,7 @@ const TERRITORY_SCHEMA = {
 };
 
 const DEFAULT_TARGET_TERRITORY_COUNT = 5;
+const MAX_OVERUSE_RETRIES = 2;
 
 // Schema range is built from the scope judge's target T (see scope_judge.js)
 // instead of a hardcoded 3-5 — a tight band around T rather than an exact
@@ -148,10 +149,20 @@ async function runCoordinatorInitial({
   const pairScores = renderPairScores(personas);
   const validIds = new Set(personas.map((p) => p.id));
 
-  // T <= P clamp: a working-group count above the available persona pool
-  // can't be staffed with distinct pairs, so cap the judge's target at the
-  // candidate-persona count before it ever reaches the schema or the prompt.
-  const effectiveTargetCount = Math.min(targetTerritoryCount, personas.length);
+  // T <= capacity clamp: a working-group count above what the persona pool
+  // can staff can't be assigned distinct pairs, so cap the judge's target
+  // before it ever reaches the schema or the prompt. Fixed (universal)
+  // personas anchor unlimited territories, so capacity isn't just
+  // personas.length — it's driven by the topic-specific personas, each
+  // capped at 2 territories (findOverusedPersonas). With at least one fixed
+  // persona available to pair against, capacity is nonFixedCount * 2; with
+  // none, each territory must pair two topic-specific personas, capping
+  // capacity at nonFixedCount (a graph with max degree 2 has at most n
+  // edges).
+  const fixedCount = personas.filter((p) => p.fixed).length;
+  const nonFixedCount = personas.length - fixedCount;
+  const capacity = fixedCount > 0 ? nonFixedCount * 2 : nonFixedCount;
+  const effectiveTargetCount = Math.min(targetTerritoryCount, capacity);
   const territoriesTool = emitTerritoriesTool(effectiveTargetCount);
 
   await appendLog(idea.id, 'coordinator', {
@@ -238,40 +249,50 @@ async function runCoordinatorInitial({
   let territories = parseTerritories(toolUse, validIds, personas);
 
   // "At most twice" is stated in the prompt (COORDINATOR_TERRITORIES) but
-  // models drift under high territory counts, so enforce it here too: one
-  // corrective retry naming the offending persona(s), then fail loudly
+  // models drift under high territory counts, so enforce it here too: up to
+  // MAX_OVERUSE_RETRIES corrective retries naming the offending persona(s)
+  // and exactly which territories they need to give up, then fail loudly
   // rather than silently overloading a persona's continuity across
   // territories they weren't meant to anchor.
-  const overused = findOverusedPersonas(territories, personas);
-  if (overused.length > 0) {
+  let overused = findOverusedPersonas(territories, personas);
+  let overuseRetryCount = 0;
+  while (overused.length > 0 && overuseRetryCount < MAX_OVERUSE_RETRIES) {
+    overuseRetryCount += 1;
     await appendLog(idea.id, 'coordinator', {
       kind: 'overuse_retry',
-      payload: { overused_persona_ids: overused },
+      payload: { overused_persona_ids: overused, attempt: overuseRetryCount },
     });
     const cleanedContent = dropToolUseBlock(response.content, 'emit_territories');
+    const overuseDetail = overused
+      .map((id) => {
+        const owned = territories.filter((t) => t.assigned_pair.includes(id));
+        const names = owned.map((t) => t.name || t.id).join(', ');
+        return `${id} (currently in ${owned.length} territories: ${names})`;
+      })
+      .join('; ');
     const retryMessages = [
       ...messages,
       ...(cleanedContent.length > 0 ? [{ role: 'assistant', content: cleanedContent }] : []),
       {
         role: 'user',
-        content: `Persona(s) ${overused.join(', ')} were assigned to more than two territories, which violates the rule that topic-specific personas may anchor at most two. Re-emit emit_territories with corrected \`assigned_pair\`s so no topic-specific persona appears more than twice (universal personas are exempt).`,
+        content: `Persona(s) ${overuseDetail} were assigned to more than two territories, which violates the rule that topic-specific personas may anchor at most two. For each overused persona, keep at most two of their current territories and replace their \`assigned_pair\` slot in every other listed territory with a different topic-specific persona from the roster who is not already at their two-territory limit — do not just swap two overused personas with each other, and do not leave any persona over the limit. Re-emit the FULL emit_territories call (all territories, not just the changed ones) with corrected \`assigned_pair\`s.`,
       },
     ];
     const retryResult = await runStructuredCall({ ...callArgs, messages: retryMessages });
     if (isUnrecoverableTruncation(retryResult)) {
       throw new Error(
-        `Coordinator emit_territories truncated during overuse retry; got stop_reason=${retryResult.response.stop_reason}`
+        `Coordinator emit_territories truncated during overuse retry (attempt ${overuseRetryCount}); got stop_reason=${retryResult.response.stop_reason}`
       );
     }
     const retryTerritories = parseTerritories(retryResult.toolUse, validIds, personas);
-    const stillOverused = findOverusedPersonas(retryTerritories, personas);
-    if (stillOverused.length > 0) {
-      throw new Error(
-        `Coordinator emit_territories still overuses persona(s) ${stillOverused.join(', ')} after retry`
-      );
-    }
     ({ response, usage } = retryResult);
     territories = retryTerritories;
+    overused = findOverusedPersonas(territories, personas);
+  }
+  if (overused.length > 0) {
+    throw new Error(
+      `Coordinator emit_territories still overuses persona(s) ${overused.join(', ')} after ${overuseRetryCount} retries`
+    );
   }
 
   await appendLog(idea.id, 'coordinator', {
