@@ -58,9 +58,9 @@ test('createIdea returns spec-shaped schema', () => {
   assert.equal(idea.parent_id, null);
   assert.ok(idea.investigation);
   assert.equal(idea.investigation.completed_at, null);
-  assert.equal(idea.investigation.budget.max_executor_calls, 240);
-  assert.equal(idea.investigation.budget.max_total_tokens, 8_000_000);
-  assert.equal(idea.investigation.budget.max_researcher_tool_calls, 200);
+  assert.equal(idea.investigation.budget.max_executor_calls, 3_000);
+  assert.equal(idea.investigation.budget.max_total_tokens, 100_000_000);
+  assert.equal(idea.investigation.budget.max_researcher_tool_calls, 2_000);
   assert.equal(idea.investigation.schema_version, 'v5');
   assert.deepEqual(idea.investigation.perspective_discovery.fixed_personas, [
     'skeptic',

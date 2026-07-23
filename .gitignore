@@ -1,5 +1,7 @@
 # Logs
 logs
+!test/fixtures/inspect/**/logs
+!test/fixtures/inspect/**/logs/**
 *.log
 npm-debug.log*
 yarn-debug.log*
@@ -143,6 +145,7 @@ vite.config.ts.timestamp-*
 .vite/
 node_modules/.vite/
 inspect-view.json
+!test/fixtures/inspect/**/inspect-view.json
 
 # Claude Code per-developer overrides
 .claude/settings.local.json
