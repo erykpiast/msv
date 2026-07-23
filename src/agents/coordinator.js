@@ -90,6 +90,51 @@ function isUnrecoverableTruncation({ toolUse, truncated }) {
   return !Array.isArray(toolUse.input && toolUse.input.territories);
 }
 
+// A truncated retry can still carry the previous attempt's tool_use block,
+// which has no paired tool_result and would otherwise be rejected by the API
+// (see synthesizer.js's malformed-payload retry for the same fix, and
+// discovery.js's cleanedContent handling for the origin of this pattern).
+function dropToolUseBlock(content, toolName) {
+  return (content || []).filter((block) => !(block.type === 'tool_use' && block.name === toolName));
+}
+
+function parseTerritories(toolUse, validIds, personas) {
+  return (toolUse.input.territories || [])
+    .map((t, index) => {
+      const cleanedPair = (t.assigned_pair || []).filter((id) => validIds.has(id));
+      if (cleanedPair.length !== 2) return null;
+      const score = pairDistinctnessScore(
+        personas.find((p) => p.id === cleanedPair[0]),
+        personas.find((p) => p.id === cleanedPair[1])
+      );
+      return {
+        id: `t_${String(index + 1).padStart(3, '0')}`,
+        territory_id: `t_${String(index + 1).padStart(3, '0')}`,
+        name: t.name,
+        description: t.description,
+        rationale: t.rationale || '',
+        assigned_pair: cleanedPair,
+        pair_distinctness_score: score,
+      };
+    })
+    .filter(Boolean);
+}
+
+// Prompt-only rule (see COORDINATOR_TERRITORIES): topic-specific personas may
+// anchor at most two territories; personas marked `fixed` (universal) are
+// exempt since the roster is small but the territory count can be high.
+function findOverusedPersonas(territories, personas) {
+  const fixedIds = new Set(personas.filter((p) => p.fixed).map((p) => p.id));
+  const counts = new Map();
+  for (const t of territories) {
+    for (const id of t.assigned_pair) {
+      if (fixedIds.has(id)) counts.set(id, 0);
+      else counts.set(id, (counts.get(id) || 0) + 1);
+    }
+  }
+  return [...counts.entries()].filter(([, count]) => count > 2).map(([id]) => id);
+}
+
 async function runCoordinatorInitial({
   client,
   idea,
@@ -102,17 +147,26 @@ async function runCoordinatorInitial({
   const personaSummary = renderPersonaSummary(personas);
   const pairScores = renderPairScores(personas);
   const validIds = new Set(personas.map((p) => p.id));
-  const territoriesTool = emitTerritoriesTool(targetTerritoryCount);
+
+  // T <= P clamp: a working-group count above the available persona pool
+  // can't be staffed with distinct pairs, so cap the judge's target at the
+  // candidate-persona count before it ever reaches the schema or the prompt.
+  const effectiveTargetCount = Math.min(targetTerritoryCount, personas.length);
+  const territoriesTool = emitTerritoriesTool(effectiveTargetCount);
 
   await appendLog(idea.id, 'coordinator', {
     kind: 'request',
-    payload: { persona_ids: personas.map((p) => p.id), target_territory_count: targetTerritoryCount },
+    payload: {
+      persona_ids: personas.map((p) => p.id),
+      target_territory_count: targetTerritoryCount,
+      effective_target_territory_count: effectiveTargetCount,
+    },
   });
 
   const messages = [
     {
       role: 'user',
-      content: `Topic: ${idea.raw_capture}\n\nPersona roster:\n${personaSummary}\n\nPair-distinctness scores (higher = more tension):\n${pairScores}\n\nDecompose the topic into approximately ${targetTerritoryCount} broad territories and assign persona pairs. Invoke emit_territories.`,
+      content: `Topic: ${idea.raw_capture}\n\nPersona roster:\n${personaSummary}\n\nPair-distinctness scores (higher = more tension):\n${pairScores}\n\nDecompose the topic into approximately ${effectiveTargetCount} broad territories and assign persona pairs. Invoke emit_territories.`,
     },
   ];
 
@@ -121,7 +175,7 @@ async function runCoordinatorInitial({
     model,
     budget,
     thinking: { type: 'adaptive' },
-    system: COORDINATOR_TERRITORIES(targetTerritoryCount),
+    system: COORDINATOR_TERRITORIES(effectiveTargetCount),
     // Bumped from 2400. This call forces a single small structured emit (3-5
     // territories, each a short kebab-case name + 1-2 sentence description +
     // a 2-id pair — nowhere near researcher.js's findings arrays), but it
@@ -161,27 +215,19 @@ async function runCoordinatorInitial({
         reason: result.toolUse ? 'territories_missing_or_malformed' : 'tool_use_missing',
       },
     });
-    // Drop the emit_territories tool_use block before appending assistant
-    // content — a truncated call can still carry a partial tool_use block,
-    // which has no paired tool_result and would otherwise be rejected by
-    // the API (see synthesizer.js's malformed-payload retry for the same
-    // fix, and discovery.js's cleanedContent handling for the origin of
-    // this pattern).
-    const cleanedContent = (result.response.content || []).filter(
-      (block) => !(block.type === 'tool_use' && block.name === 'emit_territories')
-    );
+    const cleanedContent = dropToolUseBlock(result.response.content, 'emit_territories');
     const retryMessages = [
       ...messages,
       ...(cleanedContent.length > 0 ? [{ role: 'assistant', content: cleanedContent }] : []),
       {
         role: 'user',
-        content: `Your previous emit_territories call was cut off by the max_tokens limit before it could finish. Re-emit it now via emit_territories — keep it to ${Math.max(2, targetTerritoryCount - 1)} territories with concise descriptions so it fits within budget this time.`,
+        content: `Your previous emit_territories call was cut off by the max_tokens limit before it could finish. Re-emit it now via emit_territories — keep it to ${Math.max(2, effectiveTargetCount - 1)} territories with concise descriptions so it fits within budget this time.`,
       },
     ];
     result = await runStructuredCall({ ...callArgs, messages: retryMessages });
   }
 
-  const { response, toolUse, usage } = result;
+  let { response, toolUse, usage } = result;
 
   if (isUnrecoverableTruncation(result)) {
     throw new Error(
@@ -189,25 +235,44 @@ async function runCoordinatorInitial({
     );
   }
 
-  const territories = (toolUse.input.territories || [])
-    .map((t, index) => {
-      const cleanedPair = (t.assigned_pair || []).filter((id) => validIds.has(id));
-      if (cleanedPair.length !== 2) return null;
-      const score = pairDistinctnessScore(
-        personas.find((p) => p.id === cleanedPair[0]),
-        personas.find((p) => p.id === cleanedPair[1])
+  let territories = parseTerritories(toolUse, validIds, personas);
+
+  // "At most twice" is stated in the prompt (COORDINATOR_TERRITORIES) but
+  // models drift under high territory counts, so enforce it here too: one
+  // corrective retry naming the offending persona(s), then fail loudly
+  // rather than silently overloading a persona's continuity across
+  // territories they weren't meant to anchor.
+  const overused = findOverusedPersonas(territories, personas);
+  if (overused.length > 0) {
+    await appendLog(idea.id, 'coordinator', {
+      kind: 'overuse_retry',
+      payload: { overused_persona_ids: overused },
+    });
+    const cleanedContent = dropToolUseBlock(response.content, 'emit_territories');
+    const retryMessages = [
+      ...messages,
+      ...(cleanedContent.length > 0 ? [{ role: 'assistant', content: cleanedContent }] : []),
+      {
+        role: 'user',
+        content: `Persona(s) ${overused.join(', ')} were assigned to more than two territories, which violates the rule that topic-specific personas may anchor at most two. Re-emit emit_territories with corrected \`assigned_pair\`s so no topic-specific persona appears more than twice (universal personas are exempt).`,
+      },
+    ];
+    const retryResult = await runStructuredCall({ ...callArgs, messages: retryMessages });
+    if (isUnrecoverableTruncation(retryResult)) {
+      throw new Error(
+        `Coordinator emit_territories truncated during overuse retry; got stop_reason=${retryResult.response.stop_reason}`
       );
-      return {
-        id: `t_${String(index + 1).padStart(3, '0')}`,
-        territory_id: `t_${String(index + 1).padStart(3, '0')}`,
-        name: t.name,
-        description: t.description,
-        rationale: t.rationale || '',
-        assigned_pair: cleanedPair,
-        pair_distinctness_score: score,
-      };
-    })
-    .filter(Boolean);
+    }
+    const retryTerritories = parseTerritories(retryResult.toolUse, validIds, personas);
+    const stillOverused = findOverusedPersonas(retryTerritories, personas);
+    if (stillOverused.length > 0) {
+      throw new Error(
+        `Coordinator emit_territories still overuses persona(s) ${stillOverused.join(', ')} after retry`
+      );
+    }
+    ({ response, usage } = retryResult);
+    territories = retryTerritories;
+  }
 
   await appendLog(idea.id, 'coordinator', {
     kind: 'response',
@@ -234,5 +299,6 @@ module.exports = {
   runCoordinatorInitial,
   isUnrecoverableTruncation,
   emitTerritoriesTool,
+  findOverusedPersonas,
   DEFAULT_TARGET_TERRITORY_COUNT,
 };

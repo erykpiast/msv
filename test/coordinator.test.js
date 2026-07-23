@@ -17,6 +17,7 @@ const {
   runCoordinatorInitial,
   isUnrecoverableTruncation,
   emitTerritoriesTool,
+  findOverusedPersonas,
 } = require('../src/agents/coordinator');
 const { readLog } = require('../src/storage');
 
@@ -27,6 +28,15 @@ const PERSONAS = [
   { id: 'p_002', name: 'Bob', tradition: 'idealist', stance: 'optimistic' },
   { id: 'p_003', name: 'Cara', tradition: 'empiricist', stance: 'cautious' },
 ];
+
+// A pool large enough that the T <= P clamp never binds when tests want to
+// exercise a specific targetTerritoryCount unclamped.
+const LARGE_PERSONA_POOL = Array.from({ length: 12 }, (_, i) => ({
+  id: `p_${String(i + 1).padStart(3, '0')}`,
+  name: `Persona ${i + 1}`,
+  tradition: 'tradition',
+  stance: 'stance',
+}));
 
 // Non-streaming mock, matching test/anthropic.test.js's convention: exercises
 // runStructuredCall (client.messages.create).
@@ -233,7 +243,7 @@ test('runCoordinatorInitial: targetTerritoryCount drives the emit_territories sc
     idea: IDEA,
     model: 'test-model',
     budget: {},
-    personas: PERSONAS,
+    personas: LARGE_PERSONA_POOL,
     bus: null,
     targetTerritoryCount: 10,
   });
@@ -241,6 +251,37 @@ test('runCoordinatorInitial: targetTerritoryCount drives the emit_territories sc
   assert.equal(seenSchemas[0].minItems, 9);
   assert.equal(seenSchemas[0].maxItems, 11);
   assert.match(seenSystems[0], /approximately 10/);
+});
+
+test('runCoordinatorInitial: T <= P clamp caps the target at the persona pool size', async () => {
+  const seenSchemas = [];
+  const seenSystems = [];
+  const client = makeCreateClient((params) => {
+    seenSchemas.push(params.tools[0].input_schema.properties.territories);
+    seenSystems.push(params.system);
+    return wellFormedResponse();
+  });
+
+  await runCoordinatorInitial({
+    client,
+    idea: IDEA,
+    model: 'test-model',
+    budget: {},
+    personas: PERSONAS, // 3 personas
+    bus: null,
+    targetTerritoryCount: 10,
+  });
+
+  // effective target clamps to personas.length (3): minItems max(2, 3-1)=2, maxItems 3+1=4
+  assert.equal(seenSchemas[0].minItems, 2);
+  assert.equal(seenSchemas[0].maxItems, 4);
+  assert.match(seenSystems[0], /approximately 3/);
+
+  const entries = await readLog('i_test', 'coordinator');
+  const requestLogs = entries.filter((e) => e.kind === 'request');
+  const requestLog = requestLogs[requestLogs.length - 1];
+  assert.equal(requestLog.payload.target_territory_count, 10);
+  assert.equal(requestLog.payload.effective_target_territory_count, 3);
 });
 
 test('runCoordinatorInitial: fixed personas are marked universal in the roster so they can anchor extra territories', async () => {
@@ -283,5 +324,128 @@ test('runCoordinatorInitial: non-truncated missing forced tool still throws (exi
       personas: PERSONAS,
       bus: null,
     })
+  );
+});
+
+test('findOverusedPersonas: flags a topic-specific persona assigned more than twice', () => {
+  const personas = [
+    { id: 'p_001' },
+    { id: 'p_002' },
+    { id: 'p_003' },
+    { id: 'skeptic', fixed: true },
+  ];
+  const territories = [
+    { assigned_pair: ['p_001', 'p_002'] },
+    { assigned_pair: ['p_001', 'p_003'] },
+    { assigned_pair: ['p_001', 'skeptic'] },
+  ];
+
+  assert.deepEqual(findOverusedPersonas(territories, personas), ['p_001']);
+});
+
+test('findOverusedPersonas: fixed personas are exempt no matter how often they appear', () => {
+  const personas = [{ id: 'p_001' }, { id: 'skeptic', fixed: true }];
+  const territories = [
+    { assigned_pair: ['p_001', 'skeptic'] },
+    { assigned_pair: ['p_001', 'skeptic'] },
+    { assigned_pair: ['p_001', 'skeptic'] },
+  ];
+
+  // p_001 appears 3 times too — both flagged except the fixed one.
+  assert.deepEqual(findOverusedPersonas(territories, personas), ['p_001']);
+});
+
+test('findOverusedPersonas: returns empty when nobody exceeds two appearances', () => {
+  const personas = [{ id: 'p_001' }, { id: 'p_002' }, { id: 'p_003' }];
+  const territories = [
+    { assigned_pair: ['p_001', 'p_002'] },
+    { assigned_pair: ['p_001', 'p_003'] },
+  ];
+
+  assert.deepEqual(findOverusedPersonas(territories, personas), []);
+});
+
+test('runCoordinatorInitial: retries once when a topic-specific persona is overused, then succeeds', async () => {
+  const overusedResponse = () => ({
+    stop_reason: 'tool_use',
+    content: [
+      {
+        type: 'tool_use',
+        name: 'emit_territories',
+        id: 'tu_overused',
+        input: {
+          territories: [
+            territoryInput({ name: 'territory-a', assigned_pair: ['p_001', 'p_002'] }),
+            territoryInput({ name: 'territory-b', assigned_pair: ['p_001', 'p_003'] }),
+            territoryInput({ name: 'territory-c', assigned_pair: ['p_001', 'p_002'] }),
+          ],
+        },
+      },
+    ],
+    usage: { input_tokens: 10, output_tokens: 20 },
+  });
+
+  const seenMessages = [];
+  const client = makeCreateClient((params, opts, call) => {
+    seenMessages.push(params.messages);
+    if (call === 1) return overusedResponse();
+    return wellFormedResponse();
+  });
+
+  const result = await runCoordinatorInitial({
+    client,
+    idea: IDEA,
+    model: 'test-model',
+    budget: {},
+    personas: PERSONAS,
+    bus: null,
+  });
+
+  assert.equal(result.territories.length, 2);
+  assert.equal(seenMessages.length, 2, 'should retry exactly once');
+
+  const retryUserMsg = seenMessages[1][seenMessages[1].length - 1].content;
+  assert.match(retryUserMsg, /p_001/);
+  assert.match(retryUserMsg, /at most two/);
+
+  const entries = await readLog('i_test', 'coordinator');
+  const retryLog = entries.find((e) => e.kind === 'overuse_retry');
+  assert.ok(retryLog, 'overuse_retry must be logged');
+  assert.deepEqual(retryLog.payload.overused_persona_ids, ['p_001']);
+});
+
+test('runCoordinatorInitial: throws when overuse persists after the retry', async () => {
+  const overusedResponse = () => ({
+    stop_reason: 'tool_use',
+    content: [
+      {
+        type: 'tool_use',
+        name: 'emit_territories',
+        id: 'tu_overused',
+        input: {
+          territories: [
+            territoryInput({ name: 'territory-a', assigned_pair: ['p_001', 'p_002'] }),
+            territoryInput({ name: 'territory-b', assigned_pair: ['p_001', 'p_003'] }),
+            territoryInput({ name: 'territory-c', assigned_pair: ['p_001', 'p_002'] }),
+          ],
+        },
+      },
+    ],
+    usage: { input_tokens: 10, output_tokens: 20 },
+  });
+
+  const client = makeCreateClient(() => overusedResponse());
+
+  await assert.rejects(
+    () =>
+      runCoordinatorInitial({
+        client,
+        idea: IDEA,
+        model: 'test-model',
+        budget: {},
+        personas: PERSONAS,
+        bus: null,
+      }),
+    /still overuses persona/
   );
 });
