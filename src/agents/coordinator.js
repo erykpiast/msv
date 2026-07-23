@@ -31,29 +31,39 @@ const TERRITORY_SCHEMA = {
   },
 };
 
-const EMIT_TERRITORIES_TOOL = {
-  name: 'emit_territories',
-  description: 'Emit 4–5 broad intellectual territories, each paired with two persona ids.',
-  input_schema: {
-    type: 'object',
-    required: ['territories'],
-    additionalProperties: false,
-    properties: {
-      territories: {
-        type: 'array',
-        minItems: 3,
-        maxItems: 5,
-        items: TERRITORY_SCHEMA,
+const DEFAULT_TARGET_TERRITORY_COUNT = 5;
+
+// Schema range is built from the scope judge's target T (see scope_judge.js)
+// instead of a hardcoded 3-5 — a tight band around T rather than an exact
+// count, since forcing the model to hit T precisely produces worse
+// territories than letting it land within +/-1.
+function emitTerritoriesTool(targetCount = DEFAULT_TARGET_TERRITORY_COUNT) {
+  const minItems = Math.max(2, targetCount - 1);
+  const maxItems = targetCount + 1;
+  return {
+    name: 'emit_territories',
+    description: `Emit ${minItems}–${maxItems} broad intellectual territories, each paired with two persona ids.`,
+    input_schema: {
+      type: 'object',
+      required: ['territories'],
+      additionalProperties: false,
+      properties: {
+        territories: {
+          type: 'array',
+          minItems,
+          maxItems,
+          items: TERRITORY_SCHEMA,
+        },
       },
     },
-  },
-};
+  };
+}
 
 function renderPersonaSummary(personas) {
   return personas
     .map(
       (p) =>
-        `- ${p.id} · ${p.name}\n  tradition: ${p.tradition}\n  stance: ${p.stance}`
+        `- ${p.id} · ${p.name}${p.fixed ? ' (universal — may anchor more than two territories)' : ''}\n  tradition: ${p.tradition}\n  stance: ${p.stance}`
     )
     .join('\n');
 }
@@ -80,20 +90,29 @@ function isUnrecoverableTruncation({ toolUse, truncated }) {
   return !Array.isArray(toolUse.input && toolUse.input.territories);
 }
 
-async function runCoordinatorInitial({ client, idea, model, budget, personas, bus }) {
+async function runCoordinatorInitial({
+  client,
+  idea,
+  model,
+  budget,
+  personas,
+  bus,
+  targetTerritoryCount = DEFAULT_TARGET_TERRITORY_COUNT,
+}) {
   const personaSummary = renderPersonaSummary(personas);
   const pairScores = renderPairScores(personas);
   const validIds = new Set(personas.map((p) => p.id));
+  const territoriesTool = emitTerritoriesTool(targetTerritoryCount);
 
   await appendLog(idea.id, 'coordinator', {
     kind: 'request',
-    payload: { persona_ids: personas.map((p) => p.id) },
+    payload: { persona_ids: personas.map((p) => p.id), target_territory_count: targetTerritoryCount },
   });
 
   const messages = [
     {
       role: 'user',
-      content: `Topic: ${idea.raw_capture}\n\nPersona roster:\n${personaSummary}\n\nPair-distinctness scores (higher = more tension):\n${pairScores}\n\nDecompose the topic into 4–5 broad territories and assign persona pairs. Invoke emit_territories.`,
+      content: `Topic: ${idea.raw_capture}\n\nPersona roster:\n${personaSummary}\n\nPair-distinctness scores (higher = more tension):\n${pairScores}\n\nDecompose the topic into approximately ${targetTerritoryCount} broad territories and assign persona pairs. Invoke emit_territories.`,
     },
   ];
 
@@ -102,7 +121,7 @@ async function runCoordinatorInitial({ client, idea, model, budget, personas, bu
     model,
     budget,
     thinking: { type: 'adaptive' },
-    system: COORDINATOR_TERRITORIES,
+    system: COORDINATOR_TERRITORIES(targetTerritoryCount),
     // Bumped from 2400. This call forces a single small structured emit (3-5
     // territories, each a short kebab-case name + 1-2 sentence description +
     // a 2-id pair — nowhere near researcher.js's findings arrays), but it
@@ -120,7 +139,7 @@ async function runCoordinatorInitial({ client, idea, model, budget, personas, bu
     // thinking-heavy calls.
     timeoutMs: 120_000,
     messages,
-    tools: [EMIT_TERRITORIES_TOOL],
+    tools: [territoriesTool],
     forceTool: 'emit_territories',
   };
 
@@ -156,8 +175,7 @@ async function runCoordinatorInitial({ client, idea, model, budget, personas, bu
       ...(cleanedContent.length > 0 ? [{ role: 'assistant', content: cleanedContent }] : []),
       {
         role: 'user',
-        content:
-          'Your previous emit_territories call was cut off by the max_tokens limit before it could finish. Re-emit it now via emit_territories — keep it to 3-4 territories with concise descriptions so it fits within budget this time.',
+        content: `Your previous emit_territories call was cut off by the max_tokens limit before it could finish. Re-emit it now via emit_territories — keep it to ${Math.max(2, targetTerritoryCount - 1)} territories with concise descriptions so it fits within budget this time.`,
       },
     ];
     result = await runStructuredCall({ ...callArgs, messages: retryMessages });
@@ -215,4 +233,6 @@ async function runCoordinatorInitial({ client, idea, model, budget, personas, bu
 module.exports = {
   runCoordinatorInitial,
   isUnrecoverableTruncation,
+  emitTerritoriesTool,
+  DEFAULT_TARGET_TERRITORY_COUNT,
 };

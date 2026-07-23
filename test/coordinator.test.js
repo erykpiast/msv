@@ -13,7 +13,11 @@ const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'coordinator-test-'));
 process.env.MSV_ROOT = path.join(tmpHome, '.msv');
 fs.mkdirSync(path.join(process.env.MSV_ROOT, 'ideas', 'i_test', 'logs'), { recursive: true });
 
-const { runCoordinatorInitial, isUnrecoverableTruncation } = require('../src/agents/coordinator');
+const {
+  runCoordinatorInitial,
+  isUnrecoverableTruncation,
+  emitTerritoriesTool,
+} = require('../src/agents/coordinator');
 const { readLog } = require('../src/storage');
 
 const IDEA = { id: 'i_test', raw_capture: 'Some topic to decompose.' };
@@ -195,6 +199,72 @@ test('runCoordinatorInitial: truncation on both attempts throws instead of propa
       }),
     /truncated after retry/
   );
+});
+
+test('emitTerritoriesTool: schema range is built from the target count', () => {
+  assert.deepEqual(
+    { min: emitTerritoriesTool(5).input_schema.properties.territories.minItems,
+      max: emitTerritoriesTool(5).input_schema.properties.territories.maxItems },
+    { min: 4, max: 6 }
+  );
+  assert.deepEqual(
+    { min: emitTerritoriesTool(3).input_schema.properties.territories.minItems,
+      max: emitTerritoriesTool(3).input_schema.properties.territories.maxItems },
+    { min: 2, max: 4 }
+  );
+  assert.deepEqual(
+    { min: emitTerritoriesTool(10).input_schema.properties.territories.minItems,
+      max: emitTerritoriesTool(10).input_schema.properties.territories.maxItems },
+    { min: 9, max: 11 }
+  );
+});
+
+test('runCoordinatorInitial: targetTerritoryCount drives the emit_territories schema and prompt', async () => {
+  const seenSchemas = [];
+  const seenSystems = [];
+  const client = makeCreateClient((params) => {
+    seenSchemas.push(params.tools[0].input_schema.properties.territories);
+    seenSystems.push(params.system);
+    return wellFormedResponse();
+  });
+
+  await runCoordinatorInitial({
+    client,
+    idea: IDEA,
+    model: 'test-model',
+    budget: {},
+    personas: PERSONAS,
+    bus: null,
+    targetTerritoryCount: 10,
+  });
+
+  assert.equal(seenSchemas[0].minItems, 9);
+  assert.equal(seenSchemas[0].maxItems, 11);
+  assert.match(seenSystems[0], /approximately 10/);
+});
+
+test('runCoordinatorInitial: fixed personas are marked universal in the roster so they can anchor extra territories', async () => {
+  const seenMessages = [];
+  const client = makeCreateClient((params) => {
+    seenMessages.push(params.messages);
+    return wellFormedResponse();
+  });
+
+  await runCoordinatorInitial({
+    client,
+    idea: IDEA,
+    model: 'test-model',
+    budget: {},
+    personas: [
+      { id: 'p_001', name: 'Alice', tradition: 'pragmatist', stance: 'skeptical' },
+      { id: 'skeptic', name: 'Skeptic', tradition: 'critical', stance: 'steel-manned', fixed: true },
+    ],
+    bus: null,
+  });
+
+  const userMsg = seenMessages[0].find((m) => m.role === 'user').content;
+  assert.match(userMsg, /Skeptic \(universal/);
+  assert.doesNotMatch(userMsg, /Alice \(universal/);
 });
 
 test('runCoordinatorInitial: non-truncated missing forced tool still throws (existing contract, unchanged)', async () => {

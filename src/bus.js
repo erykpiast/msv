@@ -15,6 +15,7 @@ const EVENTS = Object.freeze({
   DISCOVERY_WEB_SEARCH_RESULT: 'discovery.web_search.result',
   DISCOVERY_EMIT_PERSONAS: 'discovery.emit_personas',
 
+  SCOPE_JUDGE_SCORED: 'scope_judge.scored',
   COORDINATOR_TERRITORIES_EMITTED: 'coordinator.territories.emitted',
 
   WG_START: 'wg.start',

@@ -25,6 +25,7 @@ const {
 } = require('../diversity');
 const { runPerspectiveDiscovery } = require('../agents/discovery');
 const { runCoordinatorInitial } = require('../agents/coordinator');
+const { runScopeJudge } = require('../agents/scope_judge');
 const { runCrossPollinationReaction } = require('../agents/persona');
 const { runWorkingGroup } = require('../working_group');
 const { aggregateForum } = require('../forum');
@@ -294,6 +295,13 @@ async function runPipeline(idea, client, { cancellationToken, bus } = {}) {
   if (inv.progress.current_stage === '3_coordinator') {
     recordStageVersion(inv);
     if (bus) bus.emit('pipeline.stage.start', { stage: 'coordinator', stage_index: 3, total_stages: 8 });
+    const scopeJudgment = await withHeartbeat('scope_judge', bus, () =>
+      runScopeJudge({ client, idea, budget: inv.budget })
+    );
+    if (bus) bus.emit('scope_judge.scored', {
+      score: scopeJudgment.score,
+      target_territory_count: scopeJudgment.target,
+    });
     const initialDecomposition = await withHeartbeat('coordinator', bus, () =>
       runCoordinatorInitial({
         client,
@@ -302,6 +310,7 @@ async function runPipeline(idea, client, { cancellationToken, bus } = {}) {
         budget: inv.budget,
         personas,
         bus,
+        targetTerritoryCount: scopeJudgment.target,
       })
     );
     const territories =
@@ -309,6 +318,8 @@ async function runPipeline(idea, client, { cancellationToken, bus } = {}) {
     inv.coordinator_decisions.initial = {
       decided_at: initialDecomposition.decided_at,
       territories,
+      scope_score: scopeJudgment.score,
+      target_territory_count: scopeJudgment.target,
     };
     // Seed per-WG progress map so stage 4 has an anchor for every territory.
     for (const t of territories) {
